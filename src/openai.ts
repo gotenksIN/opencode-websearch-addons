@@ -1,0 +1,289 @@
+import type { Credential, Plugin, WebSearch } from "@opencode-ai/plugin"
+import { resolveCredential } from "./auth.js"
+import type { OpenAIOptions } from "./config.js"
+import { isRecord, parsedTimestamp, providerError, readJSON, toResult } from "./types.js"
+import type { CatalogContext, InternalSource } from "./types.js"
+import { providerBaseURL } from "./types.js"
+
+const publicEndpoint = "https://api.openai.com/v1/responses"
+const codexEndpoint = "https://chatgpt.com/backend-api/codex/responses"
+
+export async function searchOpenAI(
+  ctx: CatalogContext & Pick<Plugin.Context, "integration">,
+  config: OpenAIOptions,
+  timeoutMs: number,
+  query: string,
+  contextSignal: AbortSignal,
+): Promise<readonly WebSearch.Result[]> {
+  const credential = await resolveCredential(ctx, "openai")
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), timeoutMs)
+  const onAbort = () => controller.abort(contextSignal.reason)
+  if (contextSignal.aborted) {
+    controller.abort(contextSignal.reason)
+  } else {
+    contextSignal.addEventListener("abort", onAbort, { once: true })
+  }
+  try {
+    if (credential.type === "key") {
+      const baseURL = await providerBaseURL(ctx, "openai")
+      return await runOpenAIRequest(
+        baseURL ? `${baseURL}/responses` : publicEndpoint,
+        { authorization: `Bearer ${credential.key}` },
+        config,
+        query,
+        controller.signal,
+      )
+    }
+    if (credential.type === "oauth") {
+      const account = accountID(credential)
+      return await runOpenAIRequest(
+        codexEndpoint,
+        {
+          authorization: `Bearer ${credential.access}`,
+          originator: "opencode",
+          ...(account ? { accountID: account } : {}),
+        },
+        config,
+        query,
+        controller.signal,
+      )
+    }
+    throw new Error("Unsupported OpenAI credential type")
+  } finally {
+    clearTimeout(timer)
+    contextSignal.removeEventListener("abort", onAbort)
+  }
+}
+
+async function runOpenAIRequest(
+  endpoint: string,
+  auth: {
+    readonly authorization: string
+    readonly originator?: string
+    readonly accountID?: string
+  },
+  config: OpenAIOptions,
+  query: string,
+  signal: AbortSignal,
+): Promise<readonly WebSearch.Result[]> {
+  const headers: Record<string, string> = {
+    Authorization: auth.authorization,
+    "Content-Type": "application/json",
+    ...(auth.originator ? { originator: auth.originator } : {}),
+    ...(auth.accountID ? { "chatgpt-account-id": auth.accountID } : {}),
+  }
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(buildResponsesBody(config, query)),
+    signal,
+  })
+  if (!response.ok) {
+    await providerError(response, "OpenAI")
+  }
+  const items = await collectOutputItems(response)
+  return normalizeOutput(items)
+}
+
+function buildResponsesBody(config: OpenAIOptions, query: string): Record<string, unknown> {
+  const tool: Record<string, unknown> = {
+    type: "web_search",
+    search_context_size: config.searchContextSize,
+    external_web_access: true,
+  }
+  if (config.userLocation) {
+    tool.user_location = { type: "approximate", ...config.userLocation }
+  }
+  return {
+    model: config.model,
+    input: [
+      {
+        role: "user",
+        content: [{ type: "input_text", text: query }],
+      },
+    ],
+    tools: [tool],
+    reasoning: { effort: config.reasoningEffort },
+    include: ["web_search_call.action.sources"],
+    store: false,
+    stream: true,
+  }
+}
+
+async function collectOutputItems(response: Response): Promise<unknown[]> {
+  const contentType = response.headers.get("content-type") ?? ""
+  if (!contentType.includes("text/event-stream")) {
+    const body = await readJSON(response)
+    if (!isRecord(body)) throw new Error("Invalid OpenAI web search response: body is not an object")
+    return Array.isArray(body.output) ? body.output : []
+  }
+  const items: unknown[] = []
+  let completed: unknown[] | undefined
+  for await (const payload of ssePayloads(response)) {
+    if (!isRecord(payload)) continue
+    if (payload.type === "response.output_item.done" && isRecord(payload.item)) {
+      items.push(payload.item)
+    } else if (payload.type === "response.completed") {
+      const output = isRecord(payload.response) ? payload.response.output : undefined
+      if (Array.isArray(output)) completed = output
+    } else if (payload.type === "response.failed") {
+      const responseRecord = isRecord(payload.response) ? payload.response : {}
+      const error = isRecord(responseRecord.error) ? responseRecord.error : {}
+      const message = typeof error.message === "string" ? error.message : "unknown error"
+      throw new Error(`OpenAI web search failed: ${message}`)
+    }
+  }
+  return items.length > 0 ? items : completed ?? []
+}
+
+interface AccumulatedSource {
+  readonly url: string
+  title?: string
+  published?: number
+  readonly spans: string[]
+  readonly seenSpans: Set<string>
+}
+
+export function normalizeOutput(output: unknown): readonly WebSearch.Result[] {
+  if (!Array.isArray(output)) throw new Error("Invalid OpenAI web search response: missing output")
+  const sourcesByURL = new Map<string, AccumulatedSource>()
+  const order: string[] = []
+  for (const rawItem of output) {
+    if (!isRecord(rawItem)) continue
+    if (rawItem.type === "message") {
+      collectMessage(rawItem, sourcesByURL, order)
+    } else if (rawItem.type === "web_search_call") {
+      collectActionSources(rawItem, sourcesByURL, order)
+    }
+  }
+  return order.flatMap((url) => {
+    const source = sourcesByURL.get(url)
+    if (!source) return []
+    const result: InternalSource = {
+      url,
+      ...(source.title ? { title: source.title } : {}),
+      ...(source.published !== undefined ? { published: source.published } : {}),
+      ...(source.spans.length > 0 ? { content: source.spans.join(" ") } : {}),
+    }
+    return [toResult(result)]
+  })
+}
+
+function collectMessage(
+  item: Record<string, unknown>,
+  sourcesByURL: Map<string, AccumulatedSource>,
+  order: string[],
+): void {
+  if (!Array.isArray(item.content)) return
+  for (const part of item.content) {
+    if (!isRecord(part) || part.type !== "output_text") continue
+    if (typeof part.text !== "string") continue
+    if (!Array.isArray(part.annotations)) continue
+    for (const annotation of part.annotations) {
+      if (!isRecord(annotation) || annotation.type !== "url_citation") continue
+      const url = typeof annotation.url === "string" ? annotation.url : undefined
+      if (!url || url.length === 0) continue
+      const span = sliceSpan(part.text, annotation.start_index, annotation.end_index)
+      const title = typeof annotation.title === "string" ? annotation.title : undefined
+      const published = parsedTimestamp(annotation.published_date ?? annotation.published)
+      addSource(sourcesByURL, order, url, { title, published, span })
+    }
+  }
+}
+
+function collectActionSources(
+  item: Record<string, unknown>,
+  sourcesByURL: Map<string, AccumulatedSource>,
+  order: string[],
+): void {
+  const action = isRecord(item.action) ? item.action : {}
+  if (!Array.isArray(action.sources)) return
+  for (const rawSource of action.sources) {
+    if (!isRecord(rawSource) || rawSource.type !== "url") continue
+    const url = typeof rawSource.url === "string" ? rawSource.url : undefined
+    if (!url || url.length === 0) continue
+    const title = typeof rawSource.title === "string" ? rawSource.title : undefined
+    const published = parsedTimestamp(rawSource.published_date ?? rawSource.published)
+    addSource(sourcesByURL, order, url, { title, published })
+  }
+}
+
+function sliceSpan(text: string, rawStart: unknown, rawEnd: unknown): string {
+  if (typeof rawStart !== "number" || typeof rawEnd !== "number") return ""
+  const start = Math.max(0, Math.min(rawStart, text.length))
+  const end = Math.max(start, Math.min(rawEnd, text.length))
+  return text.slice(start, end)
+}
+
+function addSource(
+  sourcesByURL: Map<string, AccumulatedSource>,
+  order: string[],
+  url: string,
+  fields: {
+    readonly title?: string
+    readonly published?: number
+    readonly span?: string
+  },
+): void {
+  let source = sourcesByURL.get(url)
+  if (!source) {
+    source = { url, spans: [], seenSpans: new Set() }
+    sourcesByURL.set(url, source)
+    order.push(url)
+  }
+  if (!source.title && fields.title) source.title = fields.title
+  if (source.published === undefined && fields.published !== undefined) source.published = fields.published
+  const span = fields.span
+  if (span && span.length > 0 && !source.seenSpans.has(span)) {
+    source.seenSpans.add(span)
+    source.spans.push(span)
+  }
+}
+
+function accountID(credential: Credential.OAuth): string | undefined {
+  if (!isRecord(credential.metadata)) return undefined
+  const accountID = credential.metadata.accountID ?? credential.metadata.accountId
+  return typeof accountID === "string" && accountID.length > 0 ? accountID : undefined
+}
+
+export async function* ssePayloads(response: Response): AsyncGenerator<unknown> {
+  if (!response.body) throw new Error("OpenAI web search response has no body")
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let newline: number
+      while ((newline = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newline)
+        buffer = buffer.slice(newline + 1)
+        const trimmed = line.trimEnd()
+        if (!trimmed.startsWith("data:")) continue
+        const payload = trimmed.slice(5).trim()
+        if (payload.length === 0 || payload === "[DONE]") continue
+        try {
+          yield JSON.parse(payload) as unknown
+        } catch {
+          throw new Error("Invalid OpenAI web search response: malformed stream event")
+        }
+      }
+    }
+    const remainder = buffer.trim()
+    if (remainder.length > 0 && remainder.startsWith("data:")) {
+      const payload = remainder.slice(5).trim()
+      if (payload.length > 0 && payload !== "[DONE]") {
+        try {
+          yield JSON.parse(payload) as unknown
+        } catch {
+          throw new Error("Invalid OpenAI web search response: malformed stream event")
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
