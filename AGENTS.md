@@ -68,7 +68,7 @@ tests/live.test.ts
     "node": ">=20"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^0.0.0-next-17132"
+    "@opencode-ai/plugin": "0.0.0-next-17135"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",
@@ -78,6 +78,10 @@ tests/live.test.ts
 ```
 
 The `@opencode-ai/plugin` dependency comes from the OpenCode `next` release channel (`0.0.0-next-*`) to match the OpenCode V2 binary version.
+Pin the dependency to an exact version without a range operator.
+A caret range such as `^0.0.0-next-17132` accepts every `0.0.0` prerelease whose tag sorts lexically after `next-17132`.
+npm and Arborist then select the highest sorting build, for example `0.0.0-windows-fix-202511131842`, which ships an incompatible API without the `Plugin` export.
+Such a mismatch fails plugin loads with `Export named 'Plugin' not found in module '@opencode-ai/plugin'`.
 The plugin must ship `@opencode-ai/plugin` as a real runtime dependency.
 The OpenCode V2 binary does not inject or virtualize the module for plugin loads.
 The plugin loader resolves `@opencode-ai/plugin` from the plugin package's own `node_modules`.
@@ -607,7 +611,7 @@ Verification against a real OpenCode V2 binary requires executing API commands a
 Step 1: Check registered websearch providers:
 
 ```sh
-XDG_CONFIG_HOME="$HOME/.config/opencode2" opencode2 api get /api/websearch/provider
+opencode2 api get /api/websearch/provider
 ```
 
 Expected output:
