@@ -240,6 +240,12 @@ describe("authentication", () => {
     expect(resolve).toHaveBeenCalledWith({ type: "env", name: "OPENAI_API_KEY" })
   })
 
+  test("falls back to provider catalog settings when no active integration connection exists", async () => {
+    const ctx = providerCtx({ connection: undefined, credential: undefined }, { apiKey: "catalog-api-key" })
+    const credential = await resolveCredential(ctx as never, "google")
+    expect(credential).toEqual({ type: "key", key: "catalog-api-key" })
+  })
+
   test("throws a precise error when no active connection exists", async () => {
     const ctx = { integration: { connection: { active: async () => undefined, resolve: async () => undefined } } }
     await expect(resolveCredential(ctx as never, "openai")).rejects.toThrow(/No active openai connection/)

@@ -1,6 +1,7 @@
 import type { Credential, Plugin } from "@opencode-ai/plugin"
+import type { CatalogContext } from "./types.js"
 
-export type IntegrationContext = Pick<Plugin.Context, "integration">
+export type IntegrationContext = Pick<Plugin.Context, "integration"> & Partial<CatalogContext>
 
 export async function resolveCredential(
   ctx: IntegrationContext,
@@ -8,6 +9,18 @@ export async function resolveCredential(
 ): Promise<Credential.Value> {
   const connection = await ctx.integration.connection.active(integrationID)
   if (!connection) {
+    if (ctx.catalog) {
+      try {
+        const provider = await ctx.catalog.provider.get({ providerID: integrationID })
+        const settings = provider?.data?.settings
+        const apiKey = settings && typeof settings === "object" ? settings["apiKey"] : undefined
+        if (typeof apiKey === "string" && apiKey.trim().length > 0) {
+          return { type: "key", key: apiKey.trim() }
+        }
+      } catch {
+        // Fall back to standard connection error
+      }
+    }
     throw new Error(`No active ${integrationID} connection. Connect the ${integrationID} integration in OpenCode first.`)
   }
   let credential: Credential.Value | undefined
