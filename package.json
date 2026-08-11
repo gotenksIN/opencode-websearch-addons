@@ -1,6 +1,6 @@
 {
   "name": "opencode-websearch-addons",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "OpenCode V2 plugin that adds OpenAI and Gemini native web search providers to the built-in websearch tool.",
   "license": "MIT",
   "type": "module",
