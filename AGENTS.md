@@ -68,7 +68,7 @@ tests/live.test.ts
     "node": ">=20"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-next-17055"
+    "@opencode-ai/plugin": "^0.0.0-next-17132"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",
@@ -77,7 +77,7 @@ tests/live.test.ts
 }
 ```
 
-The `@opencode-ai/plugin` dependency version `0.0.0-next-17055` matches the OpenCode V2 binary version.
+The `@opencode-ai/plugin` dependency comes from the OpenCode `next` release channel (`0.0.0-next-*`) to match the OpenCode V2 binary version.
 The plugin must ship `@opencode-ai/plugin` as a real runtime dependency.
 The OpenCode V2 binary does not inject or virtualize the module for plugin loads.
 The plugin loader resolves `@opencode-ai/plugin` from the plugin package's own `node_modules`.
@@ -232,8 +232,9 @@ The plugin resolves integration credentials on every execution using `resolveCre
 
 ```ts
 import type { Credential, Plugin } from "@opencode-ai/plugin"
+import type { CatalogContext } from "./types.js"
 
-export type IntegrationContext = Pick<Plugin.Context, "integration">
+export type IntegrationContext = Pick<Plugin.Context, "integration"> & Partial<CatalogContext>
 
 export async function resolveCredential(
   ctx: IntegrationContext,
@@ -241,6 +242,18 @@ export async function resolveCredential(
 ): Promise<Credential.Value> {
   const connection = await ctx.integration.connection.active(integrationID)
   if (!connection) {
+    if (ctx.catalog) {
+      try {
+        const provider = await ctx.catalog.provider.get({ providerID: integrationID })
+        const settings = provider?.data?.settings
+        const apiKey = settings && typeof settings === "object" ? settings["apiKey"] : undefined
+        if (typeof apiKey === "string" && apiKey.trim().length > 0) {
+          return { type: "key", key: apiKey.trim() }
+        }
+      } catch {
+        // Fall back to standard connection error
+      }
+    }
     throw new Error(`No active ${integrationID} connection. Connect the ${integrationID} integration in OpenCode first.`)
   }
   let credential: Credential.Value | undefined
