@@ -1,13 +1,13 @@
 import type { Plugin, WebSearch } from "@opencode-ai/plugin"
 import { resolveCredential } from "./auth.js"
 import type { GoogleOptions, SearchTimeRange } from "./config.js"
-import { isRecord, parsedTimestamp, providerError, readJSON, toResult } from "./types.js"
-import type { CatalogContext, InternalSource } from "./types.js"
+import { isJSONNumber, isJSONString, isRecord, parsedTimestamp, providerError, readJSON, toResult } from "./types.js"
+import type { CatalogContext, InternalSource, JsonValue } from "./types.js"
 import { providerBaseURL } from "./types.js"
 
 const apiBase = "https://generativelanguage.googleapis.com/v1beta"
 
-const thinkingLevelWire: Record<GoogleOptions["thinkingLevel"], string> = {
+const thinkingLevelWire = {
   minimal: "MINIMAL",
   low: "LOW",
   medium: "MEDIUM",
@@ -56,33 +56,20 @@ export async function searchGoogle(
   }
 }
 
-function buildGenerateContentBody(config: GoogleOptions, query: string): Record<string, unknown> {
-  const tool: Record<string, unknown> = {
-    googleSearch:
-      config.searchTimeRange === "any"
-        ? {}
-        : { timeRangeFilter: timeRangeFilterFor(config.searchTimeRange) },
-  }
-  return {
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: query }],
-      },
-    ],
-    tools: [tool],
-    generationConfig: {
-      thinkingConfig: {
-        thinkingLevel: thinkingLevelWire[config.thinkingLevel],
-      },
-    },
-  }
+function buildGenerateContentBody(config: GoogleOptions, query: string) {
+  const tool: Record<string, JsonValue> = {}
+  tool.googleSearch =
+    config.searchTimeRange === "any"
+      ? {}
+      : { timeRangeFilter: timeRangeFilterFor(config.searchTimeRange) }
+  const body: Record<string, JsonValue> = {}
+  body.contents = [{ role: "user", parts: [{ text: query }] }]
+  body.tools = [tool]
+  body.generationConfig = { thinkingConfig: { thinkingLevel: thinkingLevelWire[config.thinkingLevel] } }
+  return body
 }
 
-export function timeRangeFilterFor(range: SearchTimeRange, now: Date = new Date()): {
-  startTime: string
-  endTime: string
-} {
+export function timeRangeFilterFor(range: SearchTimeRange, now: Date = new Date()) {
   const start = new Date(now)
   switch (range) {
     case "lastDay":
@@ -103,7 +90,7 @@ export function timeRangeFilterFor(range: SearchTimeRange, now: Date = new Date(
   return {
     startTime: stripMilliseconds(start),
     endTime: stripMilliseconds(now),
-  }
+  } satisfies { startTime: string; endTime: string }
 }
 
 function stripMilliseconds(date: Date): string {
@@ -112,7 +99,7 @@ function stripMilliseconds(date: Date): string {
 
 interface MergedCandidate {
   readonly parts: string[]
-  grounding?: Record<string, unknown>
+  grounding?: Record<string, JsonValue>
   finishReason?: string
 }
 
@@ -129,19 +116,19 @@ async function collectGenerateContent(response: Response): Promise<MergedCandida
   return merged
 }
 
-function mergeChunk(merged: MergedCandidate, payload: unknown): MergedCandidate {
+function mergeChunk(merged: MergedCandidate, payload: JsonValue): MergedCandidate {
   if (!isRecord(payload)) return merged
   if (isRecord(payload.error)) {
-    const message = typeof payload.error.message === "string" ? payload.error.message : "unknown error"
+    const message = isJSONString(payload.error.message) ? payload.error.message : "unknown error"
     throw new Error(`Gemini web search failed: ${message}`)
   }
   if (!Array.isArray(payload.candidates) || payload.candidates.length === 0) return merged
   const candidate = payload.candidates[0]
-  if (!isRecord(candidate)) return merged
+  if (candidate === undefined || !isRecord(candidate)) return merged
   const content = isRecord(candidate.content) ? candidate.content : {}
   if (Array.isArray(content.parts)) {
     for (const part of content.parts) {
-      if (isRecord(part) && typeof part.text === "string") {
+      if (isRecord(part) && isJSONString(part.text)) {
         merged.parts.push(part.text)
       }
     }
@@ -151,13 +138,11 @@ function mergeChunk(merged: MergedCandidate, payload: unknown): MergedCandidate 
     const hasGrounding =
       Array.isArray(metadata.groundingChunks) || Array.isArray(metadata.groundingSupports)
     if (hasGrounding) {
-      merged.grounding = {
-        ...merged.grounding,
-        ...metadata,
-      }
+      const previous: Record<string, JsonValue> = merged.grounding ?? {}
+      merged.grounding = { ...previous, ...metadata }
     }
   }
-  if (typeof candidate.finishReason === "string") {
+  if (isJSONString(candidate.finishReason)) {
     merged.finishReason = candidate.finishReason
   }
   return merged
@@ -178,21 +163,17 @@ export function normalizeGenerateContent(merged: MergedCandidate): readonly WebS
   chunks.forEach((rawChunk, index) => {
     if (!isRecord(rawChunk)) return
     const web = isRecord(rawChunk.web) ? rawChunk.web : {}
-    const url = typeof web.uri === "string" ? web.uri : undefined
+    const url = isJSONString(web.uri) ? web.uri : undefined
     if (!url || url.length === 0) return
-    const title = typeof web.title === "string" ? web.title : undefined
+    const title = isJSONString(web.title) ? web.title : undefined
     const published = parsedTimestamp(web.published_date ?? web.published)
     let source = sourcesByURL.get(url)
     if (!source) {
-      source = {
-        url,
-        spans: [],
-        seenSpans: new Set(),
-        ...(title ? { title } : {}),
-        ...(published !== undefined ? { published } : {}),
-      }
+      source = { url, spans: [], seenSpans: new Set() }
       sourcesByURL.set(url, source)
       order.push(url)
+      if (title) source.title = title
+      if (published !== undefined) source.published = published
     } else {
       if (!source.title && title) source.title = title
       if (source.published === undefined && published !== undefined) source.published = published
@@ -208,7 +189,7 @@ export function normalizeGenerateContent(merged: MergedCandidate): readonly WebS
       if (!span) continue
       if (!Array.isArray(rawSupport.groundingChunkIndices)) continue
       for (const rawIndex of rawSupport.groundingChunkIndices) {
-        if (typeof rawIndex !== "number") continue
+        if (!isJSONNumber(rawIndex)) continue
         const source = chunkIndexToSource.get(rawIndex)
         if (!source || source.seenSpans.has(span)) continue
         source.seenSpans.add(span)
@@ -219,31 +200,27 @@ export function normalizeGenerateContent(merged: MergedCandidate): readonly WebS
   return order.flatMap((url) => {
     const source = sourcesByURL.get(url)
     if (!source) return []
-    const result: InternalSource = {
-      url: source.url,
-      ...(source.title ? { title: source.title } : {}),
-      ...(source.published !== undefined ? { published: source.published } : {}),
-      ...(source.spans.length > 0 ? { content: source.spans.join(" ") } : {}),
-    }
+    const result: InternalSource = { url: source.url }
+    if (source.title) result.title = source.title
+    if (source.published !== undefined) result.published = source.published
+    if (source.spans.length > 0) result.content = source.spans.join(" ")
     return [toResult(result)]
   })
 }
 
 interface ChunkSource extends InternalSource {
-  title?: string
-  published?: number
   readonly spans: string[]
   readonly seenSpans: Set<string>
 }
 
-function sliceSpan(text: string, rawStart: unknown, rawEnd: unknown): string {
-  if (typeof rawStart !== "number" || typeof rawEnd !== "number") return ""
+function sliceSpan(text: string, rawStart: JsonValue | undefined, rawEnd: JsonValue | undefined): string {
+  if (!isJSONNumber(rawStart) || !isJSONNumber(rawEnd)) return ""
   const start = Math.max(0, Math.min(rawStart, text.length))
   const end = Math.max(start, Math.min(rawEnd, text.length))
   return text.slice(start, end)
 }
 
-export async function* ssePayloads(response: Response): AsyncGenerator<unknown> {
+export async function* ssePayloads(response: Response): AsyncGenerator<JsonValue> {
   if (!response.body) throw new Error("Gemini web search response has no body")
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -262,7 +239,7 @@ export async function* ssePayloads(response: Response): AsyncGenerator<unknown> 
         const payload = trimmed.slice(5).trim()
         if (payload.length === 0) continue
         try {
-          yield JSON.parse(payload) as unknown
+          yield JSON.parse(payload)
         } catch {
           throw new Error("Invalid Gemini web search response: malformed stream event")
         }
@@ -273,7 +250,7 @@ export async function* ssePayloads(response: Response): AsyncGenerator<unknown> 
       const payload = remainder.slice(5).trim()
       if (payload.length > 0) {
         try {
-          yield JSON.parse(payload) as unknown
+          yield JSON.parse(payload)
         } catch {
           throw new Error("Invalid Gemini web search response: malformed stream event")
         }

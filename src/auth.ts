@@ -1,4 +1,5 @@
 import type { Credential, Plugin } from "@opencode-ai/plugin"
+import { isJSONString, isRecord } from "./types.js"
 import type { CatalogContext } from "./types.js"
 
 export type IntegrationContext = Pick<Plugin.Context, "integration"> & Partial<CatalogContext>
@@ -13,8 +14,8 @@ export async function resolveCredential(
       try {
         const provider = await ctx.catalog.provider.get({ providerID: integrationID })
         const settings = provider?.data?.settings
-        const apiKey = settings && typeof settings === "object" ? settings["apiKey"] : undefined
-        if (typeof apiKey === "string" && apiKey.trim().length > 0) {
+        const apiKey = settings !== undefined && isRecord(settings) ? settings["apiKey"] : undefined
+        if (apiKey !== undefined && isJSONString(apiKey) && apiKey.trim().length > 0) {
           return { type: "key", key: apiKey.trim() }
         }
       } catch {

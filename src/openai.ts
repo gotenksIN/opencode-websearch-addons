@@ -1,8 +1,8 @@
 import type { Credential, Plugin, WebSearch } from "@opencode-ai/plugin"
 import { resolveCredential } from "./auth.js"
 import type { OpenAIOptions } from "./config.js"
-import { isRecord, parsedTimestamp, providerError, readJSON, toResult } from "./types.js"
-import type { CatalogContext, InternalSource } from "./types.js"
+import { isJSONNumber, isJSONString, isRecord, parsedTimestamp, providerError, readJSON, toResult } from "./types.js"
+import type { CatalogContext, InternalSource, JsonValue } from "./types.js"
 import { providerBaseURL } from "./types.js"
 
 const publicEndpoint = "https://api.openai.com/v1/responses"
@@ -37,13 +37,13 @@ export async function searchOpenAI(
     }
     if (credential.type === "oauth") {
       const account = accountID(credential)
+      const auth = {
+        authorization: `Bearer ${credential.access}`,
+        originator: "opencode",
+      }
       return await runOpenAIRequest(
         codexEndpoint,
-        {
-          authorization: `Bearer ${credential.access}`,
-          originator: "opencode",
-          ...(account ? { accountID: account } : {}),
-        },
+        account ? { ...auth, accountID: account } : auth,
         config,
         query,
         controller.signal,
@@ -67,12 +67,11 @@ async function runOpenAIRequest(
   query: string,
   signal: AbortSignal,
 ): Promise<readonly WebSearch.Result[]> {
-  const headers: Record<string, string> = {
-    Authorization: auth.authorization,
-    "Content-Type": "application/json",
-    ...(auth.originator ? { originator: auth.originator } : {}),
-    ...(auth.accountID ? { "chatgpt-account-id": auth.accountID } : {}),
-  }
+  const headers: Record<string, string> = {}
+  headers.Authorization = auth.authorization
+  headers["Content-Type"] = "application/json"
+  if (auth.originator) headers.originator = auth.originator
+  if (auth.accountID) headers["chatgpt-account-id"] = auth.accountID
   const response = await fetch(endpoint, {
     method: "POST",
     headers,
@@ -86,40 +85,34 @@ async function runOpenAIRequest(
   return normalizeOutput(items)
 }
 
-function buildResponsesBody(config: OpenAIOptions, query: string): Record<string, unknown> {
-  const tool: Record<string, unknown> = {
-    type: "web_search",
-    search_context_size: config.searchContextSize,
-    external_web_access: true,
-  }
+function buildResponsesBody(config: OpenAIOptions, query: string) {
+  const tool: Record<string, JsonValue> = {}
+  tool.type = "web_search"
+  tool.search_context_size = config.searchContextSize
+  tool.external_web_access = true
   if (config.userLocation) {
     tool.user_location = { type: "approximate", ...config.userLocation }
   }
-  return {
-    model: config.model,
-    input: [
-      {
-        role: "user",
-        content: [{ type: "input_text", text: query }],
-      },
-    ],
-    tools: [tool],
-    reasoning: { effort: config.reasoningEffort },
-    include: ["web_search_call.action.sources"],
-    store: false,
-    stream: true,
-  }
+  const body: Record<string, JsonValue> = {}
+  body.model = config.model
+  body.input = [{ role: "user", content: [{ type: "input_text", text: query }] }]
+  body.tools = [tool]
+  body.reasoning = { effort: config.reasoningEffort }
+  body.include = ["web_search_call.action.sources"]
+  body.store = false
+  body.stream = true
+  return body
 }
 
-async function collectOutputItems(response: Response): Promise<unknown[]> {
+async function collectOutputItems(response: Response): Promise<JsonValue[]> {
   const contentType = response.headers.get("content-type") ?? ""
   if (!contentType.includes("text/event-stream")) {
     const body = await readJSON(response)
     if (!isRecord(body)) throw new Error("Invalid OpenAI web search response: body is not an object")
     return Array.isArray(body.output) ? body.output : []
   }
-  const items: unknown[] = []
-  let completed: unknown[] | undefined
+  const items: JsonValue[] = []
+  let completed: JsonValue[] | undefined
   for await (const payload of ssePayloads(response)) {
     if (!isRecord(payload)) continue
     if (payload.type === "response.output_item.done" && isRecord(payload.item)) {
@@ -130,7 +123,7 @@ async function collectOutputItems(response: Response): Promise<unknown[]> {
     } else if (payload.type === "response.failed") {
       const responseRecord = isRecord(payload.response) ? payload.response : {}
       const error = isRecord(responseRecord.error) ? responseRecord.error : {}
-      const message = typeof error.message === "string" ? error.message : "unknown error"
+      const message = isJSONString(error.message) ? error.message : "unknown error"
       throw new Error(`OpenAI web search failed: ${message}`)
     }
   }
@@ -145,7 +138,7 @@ interface AccumulatedSource {
   readonly seenSpans: Set<string>
 }
 
-export function normalizeOutput(output: unknown): readonly WebSearch.Result[] {
+export function normalizeOutput(output: JsonValue): readonly WebSearch.Result[] {
   if (!Array.isArray(output)) throw new Error("Invalid OpenAI web search response: missing output")
   const sourcesByURL = new Map<string, AccumulatedSource>()
   const order: string[] = []
@@ -160,32 +153,30 @@ export function normalizeOutput(output: unknown): readonly WebSearch.Result[] {
   return order.flatMap((url) => {
     const source = sourcesByURL.get(url)
     if (!source) return []
-    const result: InternalSource = {
-      url,
-      ...(source.title ? { title: source.title } : {}),
-      ...(source.published !== undefined ? { published: source.published } : {}),
-      ...(source.spans.length > 0 ? { content: source.spans.join(" ") } : {}),
-    }
+    const result: InternalSource = { url }
+    if (source.title) result.title = source.title
+    if (source.published !== undefined) result.published = source.published
+    if (source.spans.length > 0) result.content = source.spans.join(" ")
     return [toResult(result)]
   })
 }
 
 function collectMessage(
-  item: Record<string, unknown>,
+  item: Record<string, JsonValue>,
   sourcesByURL: Map<string, AccumulatedSource>,
   order: string[],
 ): void {
   if (!Array.isArray(item.content)) return
   for (const part of item.content) {
     if (!isRecord(part) || part.type !== "output_text") continue
-    if (typeof part.text !== "string") continue
+    if (!isJSONString(part.text)) continue
     if (!Array.isArray(part.annotations)) continue
     for (const annotation of part.annotations) {
       if (!isRecord(annotation) || annotation.type !== "url_citation") continue
-      const url = typeof annotation.url === "string" ? annotation.url : undefined
+      const url = isJSONString(annotation.url) ? annotation.url : undefined
       if (!url || url.length === 0) continue
       const span = sliceSpan(part.text, annotation.start_index, annotation.end_index)
-      const title = typeof annotation.title === "string" ? annotation.title : undefined
+      const title = isJSONString(annotation.title) ? annotation.title : undefined
       const published = parsedTimestamp(annotation.published_date ?? annotation.published)
       addSource(sourcesByURL, order, url, { title, published, span })
     }
@@ -193,7 +184,7 @@ function collectMessage(
 }
 
 function collectActionSources(
-  item: Record<string, unknown>,
+  item: Record<string, JsonValue>,
   sourcesByURL: Map<string, AccumulatedSource>,
   order: string[],
 ): void {
@@ -201,16 +192,16 @@ function collectActionSources(
   if (!Array.isArray(action.sources)) return
   for (const rawSource of action.sources) {
     if (!isRecord(rawSource) || rawSource.type !== "url") continue
-    const url = typeof rawSource.url === "string" ? rawSource.url : undefined
+    const url = isJSONString(rawSource.url) ? rawSource.url : undefined
     if (!url || url.length === 0) continue
-    const title = typeof rawSource.title === "string" ? rawSource.title : undefined
+    const title = isJSONString(rawSource.title) ? rawSource.title : undefined
     const published = parsedTimestamp(rawSource.published_date ?? rawSource.published)
     addSource(sourcesByURL, order, url, { title, published })
   }
 }
 
-function sliceSpan(text: string, rawStart: unknown, rawEnd: unknown): string {
-  if (typeof rawStart !== "number" || typeof rawEnd !== "number") return ""
+function sliceSpan(text: string, rawStart: JsonValue | undefined, rawEnd: JsonValue | undefined): string {
+  if (!isJSONNumber(rawStart) || !isJSONNumber(rawEnd)) return ""
   const start = Math.max(0, Math.min(rawStart, text.length))
   const end = Math.max(start, Math.min(rawEnd, text.length))
   return text.slice(start, end)
@@ -242,12 +233,14 @@ function addSource(
 }
 
 function accountID(credential: Credential.OAuth): string | undefined {
-  if (!isRecord(credential.metadata)) return undefined
-  const accountID = credential.metadata.accountID ?? credential.metadata.accountId
-  return typeof accountID === "string" && accountID.length > 0 ? accountID : undefined
+  // SAFETY: OAuth credential metadata is arbitrary JSON data attached to the credential.
+  const meta = credential.metadata as Record<string, JsonValue>
+  if (!isRecord(meta)) return undefined
+  const accountID = meta.accountID ?? meta.accountId
+  return accountID !== undefined && isJSONString(accountID) && accountID.length > 0 ? accountID : undefined
 }
 
-export async function* ssePayloads(response: Response): AsyncGenerator<unknown> {
+export async function* ssePayloads(response: Response): AsyncGenerator<JsonValue> {
   if (!response.body) throw new Error("OpenAI web search response has no body")
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
@@ -266,7 +259,7 @@ export async function* ssePayloads(response: Response): AsyncGenerator<unknown> 
         const payload = trimmed.slice(5).trim()
         if (payload.length === 0 || payload === "[DONE]") continue
         try {
-          yield JSON.parse(payload) as unknown
+          yield JSON.parse(payload)
         } catch {
           throw new Error("Invalid OpenAI web search response: malformed stream event")
         }
@@ -277,7 +270,7 @@ export async function* ssePayloads(response: Response): AsyncGenerator<unknown> 
       const payload = remainder.slice(5).trim()
       if (payload.length > 0 && payload !== "[DONE]") {
         try {
-          yield JSON.parse(payload) as unknown
+          yield JSON.parse(payload)
         } catch {
           throw new Error("Invalid OpenAI web search response: malformed stream event")
         }
