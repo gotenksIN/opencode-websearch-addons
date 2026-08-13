@@ -52,6 +52,13 @@ export function parsedTimestamp(value: JsonValue | undefined): number | undefine
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
+export function sliceSpan(text: string, rawStart: JsonValue | undefined, rawEnd: JsonValue | undefined): string {
+  if (!isJSONNumber(rawStart) || !isJSONNumber(rawEnd)) return ""
+  const start = Math.max(0, Math.min(rawStart, text.length))
+  const end = Math.max(start, Math.min(rawEnd, text.length))
+  return text.slice(start, end)
+}
+
 export async function readJSON(response: Response): Promise<JsonValue> {
   const text = await response.text()
   try {
@@ -75,6 +82,52 @@ export async function providerError(response: Response, provider: string): Promi
     // Keep the status-only message when the body is not parseable.
   }
   throw new Error(`${provider} web search failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`)
+}
+
+export async function* parseSSE(
+  response: Response,
+  provider: string,
+  skipDone = false,
+): AsyncGenerator<JsonValue> {
+  if (!response.body) throw new Error(`${provider} web search response has no body`)
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let newline: number
+      while ((newline = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newline)
+        buffer = buffer.slice(newline + 1)
+        const trimmed = line.trimEnd()
+        if (!trimmed.startsWith("data:")) continue
+        const payload = trimmed.slice(5).trim()
+        if (payload.length === 0 || (skipDone && payload === "[DONE]")) continue
+        yield parseSSEEvent(payload, provider)
+      }
+    }
+    const remainder = buffer.trim()
+    if (remainder.length > 0 && remainder.startsWith("data:")) {
+      const payload = remainder.slice(5).trim()
+      if (payload.length > 0 && !(skipDone && payload === "[DONE]")) {
+        yield parseSSEEvent(payload, provider)
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+function parseSSEEvent(payload: string, provider: string): JsonValue {
+  try {
+    // SAFETY: JSON.parse output is plain JSON data by definition.
+    return JSON.parse(payload) as JsonValue
+  } catch {
+    throw new Error(`Invalid ${provider} web search response: malformed stream event`)
+  }
 }
 
 export function toResult(source: InternalSource): WebSearch.Result {

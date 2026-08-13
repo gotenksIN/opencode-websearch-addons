@@ -1,9 +1,8 @@
 import type { Plugin, WebSearch } from "@opencode-ai/plugin"
 import { resolveCredential } from "./auth.js"
 import type { GoogleOptions, SearchTimeRange } from "./config.js"
-import { isJSONNumber, isJSONString, isRecord, parsedTimestamp, providerError, readJSON, toResult } from "./types.js"
+import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sliceSpan, toResult } from "./types.js"
 import type { CatalogContext, InternalSource, JsonValue } from "./types.js"
-import { providerBaseURL } from "./types.js"
 
 const apiBase = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -110,7 +109,7 @@ async function collectGenerateContent(response: Response): Promise<MergedCandida
     return mergeChunk({ parts: [] }, body)
   }
   const merged: MergedCandidate = { parts: [] }
-  for await (const payload of ssePayloads(response)) {
+  for await (const payload of parseSSE(response, "Gemini")) {
     mergeChunk(merged, payload)
   }
   return merged
@@ -211,52 +210,4 @@ export function normalizeGenerateContent(merged: MergedCandidate): readonly WebS
 interface ChunkSource extends InternalSource {
   readonly spans: string[]
   readonly seenSpans: Set<string>
-}
-
-function sliceSpan(text: string, rawStart: JsonValue | undefined, rawEnd: JsonValue | undefined): string {
-  if (!isJSONNumber(rawStart) || !isJSONNumber(rawEnd)) return ""
-  const start = Math.max(0, Math.min(rawStart, text.length))
-  const end = Math.max(start, Math.min(rawEnd, text.length))
-  return text.slice(start, end)
-}
-
-export async function* ssePayloads(response: Response): AsyncGenerator<JsonValue> {
-  if (!response.body) throw new Error("Gemini web search response has no body")
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let newline: number
-      while ((newline = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, newline)
-        buffer = buffer.slice(newline + 1)
-        const trimmed = line.trimEnd()
-        if (!trimmed.startsWith("data:")) continue
-        const payload = trimmed.slice(5).trim()
-        if (payload.length === 0) continue
-        try {
-          yield JSON.parse(payload)
-        } catch {
-          throw new Error("Invalid Gemini web search response: malformed stream event")
-        }
-      }
-    }
-    const remainder = buffer.trim()
-    if (remainder.length > 0 && remainder.startsWith("data:")) {
-      const payload = remainder.slice(5).trim()
-      if (payload.length > 0) {
-        try {
-          yield JSON.parse(payload)
-        } catch {
-          throw new Error("Invalid Gemini web search response: malformed stream event")
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock()
-  }
 }

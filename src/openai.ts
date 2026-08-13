@@ -1,9 +1,8 @@
 import type { Credential, Plugin, WebSearch } from "@opencode-ai/plugin"
 import { resolveCredential } from "./auth.js"
 import type { OpenAIOptions } from "./config.js"
-import { isJSONNumber, isJSONString, isRecord, parsedTimestamp, providerError, readJSON, toResult } from "./types.js"
+import { isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sliceSpan, toResult } from "./types.js"
 import type { CatalogContext, InternalSource, JsonValue } from "./types.js"
-import { providerBaseURL } from "./types.js"
 
 const publicEndpoint = "https://api.openai.com/v1/responses"
 const codexEndpoint = "https://chatgpt.com/backend-api/codex/responses"
@@ -113,7 +112,7 @@ async function collectOutputItems(response: Response): Promise<JsonValue[]> {
   }
   const items: JsonValue[] = []
   let completed: JsonValue[] | undefined
-  for await (const payload of ssePayloads(response)) {
+  for await (const payload of parseSSE(response, "OpenAI", true)) {
     if (!isRecord(payload)) continue
     if (payload.type === "response.output_item.done" && isRecord(payload.item)) {
       items.push(payload.item)
@@ -200,13 +199,6 @@ function collectActionSources(
   }
 }
 
-function sliceSpan(text: string, rawStart: JsonValue | undefined, rawEnd: JsonValue | undefined): string {
-  if (!isJSONNumber(rawStart) || !isJSONNumber(rawEnd)) return ""
-  const start = Math.max(0, Math.min(rawStart, text.length))
-  const end = Math.max(start, Math.min(rawEnd, text.length))
-  return text.slice(start, end)
-}
-
 function addSource(
   sourcesByURL: Map<string, AccumulatedSource>,
   order: string[],
@@ -238,45 +230,4 @@ function accountID(credential: Credential.OAuth): string | undefined {
   if (!isRecord(meta)) return undefined
   const accountID = meta.accountID ?? meta.accountId
   return accountID !== undefined && isJSONString(accountID) && accountID.length > 0 ? accountID : undefined
-}
-
-export async function* ssePayloads(response: Response): AsyncGenerator<JsonValue> {
-  if (!response.body) throw new Error("OpenAI web search response has no body")
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let newline: number
-      while ((newline = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, newline)
-        buffer = buffer.slice(newline + 1)
-        const trimmed = line.trimEnd()
-        if (!trimmed.startsWith("data:")) continue
-        const payload = trimmed.slice(5).trim()
-        if (payload.length === 0 || payload === "[DONE]") continue
-        try {
-          yield JSON.parse(payload)
-        } catch {
-          throw new Error("Invalid OpenAI web search response: malformed stream event")
-        }
-      }
-    }
-    const remainder = buffer.trim()
-    if (remainder.length > 0 && remainder.startsWith("data:")) {
-      const payload = remainder.slice(5).trim()
-      if (payload.length > 0 && payload !== "[DONE]") {
-        try {
-          yield JSON.parse(payload)
-        } catch {
-          throw new Error("Invalid OpenAI web search response: malformed stream event")
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock()
-  }
 }
