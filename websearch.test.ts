@@ -1,20 +1,75 @@
 import { afterEach, describe, expect, test, vi } from "bun:test"
+import type { Plugin, WebSearch } from "@opencode-ai/plugin"
 import plugin from "./index.js"
 import { defaultConfig, parseConfig } from "./src/config.js"
-import type { PluginConfig } from "./src/config.js"
+import type { PluginConfig, ThinkingLevel } from "./src/config.js"
 import { searchGoogle } from "./src/google.js"
 import { normalizeGenerateContent, timeRangeFilterFor } from "./src/google.js"
 import { normalizeOutput, searchOpenAI } from "./src/openai.js"
 import { resolveCredential } from "./src/auth.js"
+import type { CatalogContext } from "./src/types.js"
 
 afterEach(() => {
   vi.restoreAllMocks()
 })
 
+type JsonValue = string | number | boolean | null | JsonValue[] | { readonly [key: string]: JsonValue }
+
+interface SearchDefinition {
+  readonly id: string
+  readonly name: string
+  readonly execute: (
+    input: { readonly query: string },
+    context: { readonly signal: AbortSignal },
+  ) => Promise<readonly WebSearch.Result[]>
+}
+
+interface OpenAIRequestBody {
+  readonly model: string
+  readonly tools: readonly OpenAISearchTool[]
+  readonly reasoning: { readonly effort: string }
+  readonly include: readonly string[]
+  readonly store: boolean
+  readonly stream: boolean
+  readonly instructions?: string
+}
+
+interface OpenAISearchTool {
+  readonly type: string
+  readonly search_context_size: string
+  readonly external_web_access: boolean
+  readonly user_location?: {
+    readonly type: string
+    readonly city?: string
+    readonly country?: string
+    readonly region?: string
+    readonly timezone?: string
+  }
+}
+
+interface GoogleRequestBody {
+  readonly contents: readonly {
+    readonly role: string
+    readonly parts: readonly { readonly text: string }[]
+  }[]
+  readonly tools: readonly GoogleSearchTool[]
+  readonly generationConfig: { readonly thinkingConfig: { readonly thinkingLevel: string } }
+}
+
+interface GoogleSearchTool {
+  readonly googleSearch: {
+    readonly timeRangeFilter?: { readonly startTime: string; readonly endTime: string }
+  }
+}
+
 function mockFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
-  return vi.spyOn(globalThis, "fetch").mockImplementation(
-    (async (input: unknown, init?: RequestInit) => handler(typeof input === "string" ? input : String(input), init ?? {})) as never,
-  )
+  const implementation = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof URL ? String(input) : input instanceof Request ? input.url : input
+    return handler(url, init ?? {})
+  }
+  // SAFETY: bun's `typeof fetch` includes statics such as preconnect; the mock
+  // implements only the callable contract these tests exercise.
+  return vi.spyOn(globalThis, "fetch").mockImplementation(implementation as typeof fetch)
 }
 
 function sseResponse(events: readonly string[]): Response {
@@ -22,15 +77,44 @@ function sseResponse(events: readonly string[]): Response {
   return new Response(body, { headers: { "Content-Type": "text/event-stream" } })
 }
 
-function jsonResponse(body: unknown, status = 200, contentType = "application/json"): Response {
+function jsonResponse(body: JsonValue, status = 200, contentType = "application/json"): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": contentType } })
 }
 
-function bodyOf(init: RequestInit): Record<string, unknown> {
-  return JSON.parse(String(init.body)) as Record<string, unknown>
+function bodyOf<T>(init: RequestInit): T {
+  return JSON.parse(String(init.body))
 }
 
-function providerCtx(auth: { connection?: unknown; credential?: unknown }, settings?: Record<string, unknown>) {
+function headerValue(value: string | ReadonlyArray<string>): string {
+  if (value instanceof Array) return value.join(", ")
+  return value
+}
+
+function headersOf(init: RequestInit): Record<string, string> {
+  const headers = init.headers
+  if (headers === undefined) return {}
+  if (headers instanceof Headers) {
+    return headers.toJSON()
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(
+      headers
+        .filter((entry) => entry.length >= 2)
+        .map((entry) => [entry[0]!, entry[1]!] as const),
+    )
+  }
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [key, headerValue(value)] as const),
+  )
+}
+
+function providerCtx(
+  auth: { readonly connection?: JsonValue; readonly credential?: JsonValue },
+  settings?: Record<string, JsonValue>,
+): CatalogContext & Pick<Plugin.Context, "integration"> {
+  // SAFETY: test double for the plugin context. The connection methods return
+  // the fixture values regardless of their arguments, which matches the subset
+  // of the integration contract these unit tests exercise.
   return {
     integration: {
       connection: {
@@ -43,7 +127,20 @@ function providerCtx(auth: { connection?: unknown; credential?: unknown }, setti
         get: async () => ({ data: { settings: settings ?? {} } }),
       },
     },
-  }
+  } as never
+}
+
+function connectionCtx(
+  active: () => Promise<JsonValue | undefined>,
+  resolve: () => Promise<JsonValue | undefined>,
+): CatalogContext & Pick<Plugin.Context, "integration"> {
+  // SAFETY: test double for the plugin context. It implements only the
+  // connection subset used by resolveCredential and has no catalog fallback.
+  return {
+    integration: {
+      connection: { active, resolve },
+    },
+  } as never
 }
 
 const keyCredential = { type: "key", key: "sk-test-secret-key-123" } as const
@@ -71,17 +168,29 @@ const fullConfig: PluginConfig = {
   timeoutMs: 60_000,
 }
 
-async function openaiResults(config: PluginConfig, auth: unknown, query = "what is the weather") {
-  return searchOpenAI(providerCtx({ connection: {}, credential: auth }) as never, config.openai, config.timeoutMs, query, new AbortController().signal)
+async function openaiResults(config: PluginConfig, auth: JsonValue, query = "what is the weather") {
+  return searchOpenAI(
+    providerCtx({ connection: {}, credential: auth }),
+    config.openai,
+    config.timeoutMs,
+    query,
+    new AbortController().signal,
+  )
 }
 
-async function googleResults(config: PluginConfig, auth: unknown, query = "what is the weather") {
-  return searchGoogle(providerCtx({ connection: {}, credential: auth }) as never, config.google, config.timeoutMs, query, new AbortController().signal)
+async function googleResults(config: PluginConfig, auth: JsonValue, query = "what is the weather") {
+  return searchGoogle(
+    providerCtx({ connection: {}, credential: auth }),
+    config.google,
+    config.timeoutMs,
+    query,
+    new AbortController().signal,
+  )
 }
 
 describe("registration", () => {
   test("registers exactly the openai and google providers with expected display names", async () => {
-    const added: Array<{ id: string; name: string; execute: unknown }> = []
+    const added: SearchDefinition[] = []
     const setDefault = vi.fn()
     const toolTransform = vi.fn()
     const ctx = {
@@ -89,7 +198,7 @@ describe("registration", () => {
       integration: { connection: { active: async () => undefined, resolve: async () => undefined } },
       websearch: {
         transform: async (callback: (draft: {
-          add: (definition: { id: string; name: string; execute: unknown }) => void
+          add: (definition: SearchDefinition) => void
           default: { set: () => void }
         }) => void) => {
           callback({
@@ -101,6 +210,8 @@ describe("registration", () => {
       },
       tool: { transform: toolTransform },
     }
+    // SAFETY: the test double implements only the subset of the plugin context
+    // contract this registration test exercises.
     const cleanup = await plugin.setup(ctx as never)
     expect(added.map((item) => [item.id, item.name])).toEqual([
       ["openai", "OpenAI Web Search"],
@@ -108,12 +219,13 @@ describe("registration", () => {
     ])
     expect(setDefault).not.toHaveBeenCalled()
     expect(toolTransform).not.toHaveBeenCalled()
-    expect(typeof cleanup).toBe("function")
-    await (cleanup as () => Promise<void>)()
+    expect(cleanup).toBeTypeOf("function")
+    if (!cleanup) throw new Error("expected a cleanup function")
+    await cleanup()
   })
 
   test("providers execute through the registered execute functions", async () => {
-    const added: Array<{ id: string; name: string; execute: (input: { query: string }, context: { signal: AbortSignal }) => Promise<unknown> }> = []
+    const added: SearchDefinition[] = []
     const ctx = {
       options: {},
       integration: {
@@ -123,13 +235,15 @@ describe("registration", () => {
         },
       },
       websearch: {
-        transform: async (callback: (draft: { add: (definition: unknown) => void }) => void) => {
-          callback({ add: (definition) => added.push(definition as never) })
+        transform: async (callback: (draft: { add: (definition: SearchDefinition) => void }) => void) => {
+          callback({ add: (definition) => added.push(definition) })
           return { dispose: async () => undefined }
         },
       },
     }
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
+    // SAFETY: the test double implements only the subset of the plugin context
+    // contract this registration test exercises.
     await plugin.setup(ctx as never)
     const openaiResult = await added[0]!.execute({ query: "hello" }, { signal: new AbortController().signal })
     const googleResult = await added[1]!.execute({ query: "hello" }, { signal: new AbortController().signal })
@@ -201,13 +315,14 @@ describe("options", () => {
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
     await openaiResults(defaultConfig, keyCredential)
     await googleResults(defaultConfig, keyCredential)
-    const [openaiInit, googleInit] = fetchSpy.mock.calls.map((call) => call[1]) as RequestInit[]
-    const openaiBody = bodyOf(openaiInit!)
-    const tool = (openaiBody.tools as Record<string, unknown>[])[0]!
+    const openaiInit = fetchSpy.mock.calls[0]![1]!
+    const googleInit = fetchSpy.mock.calls[1]![1]!
+    const openaiBody = bodyOf<OpenAIRequestBody>(openaiInit)
+    const tool = openaiBody.tools[0]!
     expect(tool.user_location).toBeUndefined()
     expect(openaiBody.instructions).toBeUndefined()
-    const googleBody = bodyOf(googleInit!)
-    const googleTool = (googleBody.tools as Record<string, unknown>[])[0]!
+    const googleBody = bodyOf<GoogleRequestBody>(googleInit)
+    const googleTool = googleBody.tools[0]!
     expect(googleTool.googleSearch).toEqual({})
   })
 })
@@ -217,9 +332,9 @@ describe("authentication", () => {
     const active = vi.fn(async () => ({ type: "credential", id: "cred_1" }))
     const resolve = vi.fn(async () => keyCredential)
     mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    const ctx = { integration: { connection: { active, resolve } } }
-    await searchOpenAI(ctx as never, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
-    await searchGoogle(ctx as never, defaultConfig.google, defaultConfig.timeoutMs, "q", new AbortController().signal)
+    const ctx = connectionCtx(active, resolve)
+    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
+    await searchGoogle(ctx, defaultConfig.google, defaultConfig.timeoutMs, "q", new AbortController().signal)
     expect(active).toHaveBeenNthCalledWith(1, "openai")
     expect(active).toHaveBeenNthCalledWith(2, "google")
     expect(resolve).toHaveBeenCalledTimes(2)
@@ -232,9 +347,9 @@ describe("authentication", () => {
       .mockResolvedValueOnce({ type: "env", name: "OPENAI_API_KEY" })
     const resolve = vi.fn(async () => keyCredential)
     mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    const ctx = { integration: { connection: { active, resolve } } }
-    await searchOpenAI(ctx as never, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
-    await searchOpenAI(ctx as never, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
+    const ctx = connectionCtx(active, resolve)
+    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
+    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
     expect(resolve).toHaveBeenCalledTimes(2)
     expect(resolve).toHaveBeenCalledWith({ type: "credential", id: "cred_1", label: "API key" })
     expect(resolve).toHaveBeenCalledWith({ type: "env", name: "OPENAI_API_KEY" })
@@ -242,30 +357,26 @@ describe("authentication", () => {
 
   test("falls back to provider catalog settings when no active integration connection exists", async () => {
     const ctx = providerCtx({ connection: undefined, credential: undefined }, { apiKey: "catalog-api-key" })
-    const credential = await resolveCredential(ctx as never, "google")
+    const credential = await resolveCredential(ctx, "google")
     expect(credential).toEqual({ type: "key", key: "catalog-api-key" })
   })
 
   test("throws a precise error when no active connection exists", async () => {
-    const ctx = { integration: { connection: { active: async () => undefined, resolve: async () => undefined } } }
-    await expect(resolveCredential(ctx as never, "openai")).rejects.toThrow(/No active openai connection/)
-    await expect(resolveCredential(ctx as never, "google")).rejects.toThrow(/No active google connection/)
+    const ctx = connectionCtx(async () => undefined, async () => undefined)
+    await expect(resolveCredential(ctx, "openai")).rejects.toThrow(/No active openai connection/)
+    await expect(resolveCredential(ctx, "google")).rejects.toThrow(/No active google connection/)
   })
 
   test("throws when credentials cannot be resolved or resolution fails", async () => {
-    const unresolved = { integration: { connection: { active: async () => ({}), resolve: async () => undefined } } }
-    await expect(resolveCredential(unresolved as never, "openai")).rejects.toThrow(/Unable to resolve openai credentials/)
-    const failing = {
-      integration: {
-        connection: {
-          active: async () => ({}),
-          resolve: async () => {
-            throw new Error("refresh failed")
-          },
-        },
+    const unresolved = connectionCtx(async () => ({}), async () => undefined)
+    await expect(resolveCredential(unresolved, "openai")).rejects.toThrow(/Unable to resolve openai credentials/)
+    const failing = connectionCtx(
+      async () => ({}),
+      async () => {
+        throw new Error("refresh failed")
       },
-    }
-    await expect(resolveCredential(failing as never, "google")).rejects.toThrow(/Unable to resolve google credentials/)
+    )
+    await expect(resolveCredential(failing, "google")).rejects.toThrow(/Unable to resolve google credentials/)
   })
 
   test("rejects unsupported credential types", async () => {
@@ -285,19 +396,12 @@ describe("authentication", () => {
   })
 
   test("picks up a changed active connection on the next execution", async () => {
-    let current: unknown = keyCredential
-    const ctx = {
-      integration: {
-        connection: {
-          active: async () => ({}),
-          resolve: async () => current,
-        },
-      },
-    }
+    let current: JsonValue = keyCredential
+    const ctx = connectionCtx(async () => ({}), async () => current)
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    await searchOpenAI(ctx as never, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
+    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
     current = oauthCredential
-    await searchOpenAI(ctx as never, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
+    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
     const urls = fetchSpy.mock.calls.map((call) => String(call[0]))
     expect(urls).toEqual([
       "https://api.openai.com/v1/responses",
@@ -312,12 +416,12 @@ describe("openai", () => {
     await openaiResults(fullConfig, keyCredential)
     const [url, init] = fetchSpy.mock.calls[0]!
     expect(String(url)).toBe("https://api.openai.com/v1/responses")
-    const body = bodyOf(init!)
+    const body = bodyOf<OpenAIRequestBody>(init!)
     expect(body.model).toBe("gpt-custom-model")
     expect(body.store).toBe(false)
     expect(body.stream).toBe(true)
     expect(body.include).toContain("web_search_call.action.sources")
-    const tool = (body.tools as Record<string, unknown>[])[0]!
+    const tool = body.tools[0]!
     expect(tool.type).toBe("web_search")
     expect(tool.search_context_size).toBe("high")
     expect(tool.external_web_access).toBe(true)
@@ -330,18 +434,18 @@ describe("openai", () => {
     await openaiResults(defaultConfig, keyCredential)
     const [url, init] = fetchSpy.mock.calls[0]!
     expect(String(url)).toBe("https://api.openai.com/v1/responses")
-    const headers = init!.headers as Record<string, string>
+    const headers = headersOf(init!)
     expect(headers.Authorization).toBe("Bearer sk-test-secret-key-123")
     expect(headers.originator).toBeUndefined()
     expect(headers["chatgpt-account-id"]).toBeUndefined()
-    const body = bodyOf(init!)
+    const body = bodyOf<OpenAIRequestBody>(init!)
     expect(body.instructions).toBeUndefined()
   })
 
   test("uses the provider settings baseURL for key credentials when configured", async () => {
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
     await searchOpenAI(
-      providerCtx({ connection: {}, credential: keyCredential }, { baseURL: "https://example.com/openai/v1" }) as never,
+      providerCtx({ connection: {}, credential: keyCredential }, { baseURL: "https://example.com/openai/v1" }),
       defaultConfig.openai,
       defaultConfig.timeoutMs,
       "q",
@@ -353,7 +457,7 @@ describe("openai", () => {
   test("keeps the codex endpoint for OAuth even when a baseURL is configured", async () => {
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
     await searchOpenAI(
-      providerCtx({ connection: {}, credential: oauthCredential }, { baseURL: "https://example.com/openai/v1" }) as never,
+      providerCtx({ connection: {}, credential: oauthCredential }, { baseURL: "https://example.com/openai/v1" }),
       defaultConfig.openai,
       defaultConfig.timeoutMs,
       "q",
@@ -379,6 +483,8 @@ describe("openai", () => {
       },
     }
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
+    // SAFETY: test double for the plugin context. catalog.provider.get throws
+    // so the provider falls back to the official endpoint.
     await searchOpenAI(ctx as never, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
     expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://api.openai.com/v1/responses")
   })
@@ -388,11 +494,11 @@ describe("openai", () => {
     await openaiResults(defaultConfig, oauthCredential)
     const [url, init] = fetchSpy.mock.calls[0]!
     expect(String(url)).toBe("https://chatgpt.com/backend-api/codex/responses")
-    const headers = init!.headers as Record<string, string>
+    const headers = headersOf(init!)
     expect(headers.Authorization).toBe("Bearer access-token-456")
     expect(headers.originator).toBe("opencode")
     expect(headers["chatgpt-account-id"]).toBe("acc-1001")
-    const body = bodyOf(init!)
+    const body = bodyOf<OpenAIRequestBody>(init!)
     expect(body.instructions).toBeUndefined()
   })
 
@@ -401,7 +507,7 @@ describe("openai", () => {
       const auth = { ...oauthCredential, metadata: { [key]: "acc-2002" } }
       const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
       await openaiResults(defaultConfig, auth)
-      const headers = fetchSpy.mock.calls[0]![1]!.headers as Record<string, string>
+      const headers = headersOf(fetchSpy.mock.calls[0]![1]!)
       expect(headers["chatgpt-account-id"]).toBe("acc-2002")
       vi.restoreAllMocks()
     }
@@ -604,23 +710,23 @@ describe("gemini", () => {
     expect(String(url)).toBe(
       "https://generativelanguage.googleapis.com/v1beta/models/gemini-custom-model:streamGenerateContent?alt=sse",
     )
-    const headers = init!.headers as Record<string, string>
+    const headers = headersOf(init!)
     expect(headers["x-goog-api-key"]).toBe("sk-test-secret-key-123")
-    const body = bodyOf(init!)
+    const body = bodyOf<GoogleRequestBody>(init!)
     expect(body.contents).toEqual([{ role: "user", parts: [{ text: "what is the weather" }] }])
-    const tool = (body.tools as Record<string, unknown>[])[0]!
+    const tool = body.tools[0]!
     expect(tool.googleSearch).toBeDefined()
-    const timeRange = (tool.googleSearch as Record<string, unknown>).timeRangeFilter as Record<string, unknown>
-    expect(typeof timeRange.startTime).toBe("string")
-    expect(typeof timeRange.endTime).toBe("string")
+    const timeRange = tool.googleSearch.timeRangeFilter!
+    expect(timeRange.startTime).toBeTypeOf("string")
+    expect(timeRange.endTime).toBeTypeOf("string")
     expect(timeRange.startTime).toMatch(/Z$/)
-    expect((body.generationConfig as Record<string, unknown>).thinkingConfig).toEqual({ thinkingLevel: "HIGH" })
+    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "HIGH" })
   })
 
   test("uses the provider settings baseURL for Gemini when configured", async () => {
     const fetchSpy = mockFetch((_url, _init) => sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]))
     await searchGoogle(
-      providerCtx({ connection: {}, credential: keyCredential }, { baseURL: "https://example.com/google/v1beta" }) as never,
+      providerCtx({ connection: {}, credential: keyCredential }, { baseURL: "https://example.com/google/v1beta" }),
       defaultConfig.google,
       defaultConfig.timeoutMs,
       "q",
@@ -632,7 +738,7 @@ describe("gemini", () => {
   })
 
   test("maps every thinking level to its uppercase wire enum", async () => {
-    const levels: Array<[string, string]> = [
+    const levels: Array<[ThinkingLevel, string]> = [
       ["minimal", "MINIMAL"],
       ["low", "LOW"],
       ["medium", "MEDIUM"],
@@ -640,10 +746,10 @@ describe("gemini", () => {
     ]
     for (const [option, wire] of levels) {
       const fetchSpy = mockFetch((_url, _init) => sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]))
-      const config = { ...defaultConfig, google: { ...defaultConfig.google, thinkingLevel: option as never } }
+      const config = { ...defaultConfig, google: { ...defaultConfig.google, thinkingLevel: option } }
       await googleResults(config, keyCredential)
-      const body = bodyOf(fetchSpy.mock.calls[0]![1]!)
-      expect((body.generationConfig as Record<string, unknown>).thinkingConfig).toEqual({ thinkingLevel: wire })
+      const body = bodyOf<GoogleRequestBody>(fetchSpy.mock.calls[0]![1]!)
+      expect(body.generationConfig.thinkingConfig).toEqual({ thinkingLevel: wire })
       vi.restoreAllMocks()
     }
   })
@@ -651,8 +757,8 @@ describe("gemini", () => {
   test("omits timeRangeFilter for searchTimeRange any", async () => {
     const fetchSpy = mockFetch((_url, _init) => sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]))
     await googleResults(defaultConfig, keyCredential)
-    const body = bodyOf(fetchSpy.mock.calls[0]![1]!)
-    const tool = (body.tools as Record<string, unknown>[])[0]!
+    const body = bodyOf<GoogleRequestBody>(fetchSpy.mock.calls[0]![1]!)
+    const tool = body.tools[0]!
     expect(tool.googleSearch).toEqual({})
   })
 
@@ -672,6 +778,7 @@ describe("gemini", () => {
         ],
       },
     }
+    // SAFETY: fixture mirrors the merged stream shape normalizeGenerateContent consumes.
     const results = normalizeGenerateContent(merged as never)
     expect(results).toEqual([
       {
@@ -732,6 +839,7 @@ describe("gemini", () => {
         ],
       },
     }
+    // SAFETY: fixture mirrors the merged stream shape normalizeGenerateContent consumes.
     const results = normalizeGenerateContent(merged as never)
     expect(results.map((result) => result.url)).toEqual(["https://example.com/a", "https://example.com/b"])
     expect(results[0]!.content).toBe("one")
@@ -777,7 +885,7 @@ describe("runtime contract", () => {
     const results = await openaiResults(defaultConfig, keyCredential)
     expect(results.length).toBeGreaterThan(0)
     for (const result of results) {
-      expect(typeof result.url).toBe("string")
+      expect(result.url).toBeTypeOf("string")
       expect(result.time).toBeDefined()
       expect(Object.keys(result).sort()).toEqual(["content", "time", "title", "url"].sort())
     }
@@ -786,14 +894,15 @@ describe("runtime contract", () => {
   test("OpenCode's abort signal reaches fetch and cancels in-flight requests", async () => {
     const controller = new AbortController()
     mockFetch((_url, init) => {
-      const signal = init.signal as AbortSignal
+      const signal = init.signal
+      if (!signal) throw new Error("expected an abort signal")
       if (signal.aborted) return Promise.reject(signal.reason)
       return new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason))
       })
     })
     const request = searchOpenAI(
-      providerCtx({ connection: {}, credential: keyCredential }) as never,
+      providerCtx({ connection: {}, credential: keyCredential }),
       defaultConfig.openai,
       defaultConfig.timeoutMs,
       "q",
@@ -806,7 +915,8 @@ describe("runtime contract", () => {
 
   test("timeout cancellation aborts the fetch signal", async () => {
     mockFetch((_url, init) => {
-      const signal = init.signal as AbortSignal
+      const signal = init.signal
+      if (!signal) throw new Error("expected an abort signal")
       if (signal.aborted) return Promise.reject(signal.reason)
       return new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason))
@@ -815,7 +925,7 @@ describe("runtime contract", () => {
     const started = Date.now()
     await expect(
       searchOpenAI(
-        providerCtx({ connection: {}, credential: keyCredential }) as never,
+        providerCtx({ connection: {}, credential: keyCredential }),
         defaultConfig.openai,
         100,
         "q",
