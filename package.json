@@ -4,36 +4,28 @@
   "description": "OpenCode V2 plugin that adds OpenAI and Gemini native web search providers to the built-in websearch tool.",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist",
-    "README.md"
-  ],
+  "exports": "./index.ts",
+  "files": ["index.ts", "src", "dist"],
   "scripts": {
-    "check": "tsc --noEmit && bun test",
-    "lint": "oxlint",
+    "lint": "oxlint .",
+    "test": "bun test",
     "test:agent": "AGENT=1 bun test --bail",
     "test:live": "LIVE=1 bun test",
-    "build": "tsc -p tsconfig.build.json"
+    "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit && bun test",
+    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin"
   },
-  "engines": {
-    "node": ">=20"
-  },
-  "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-next-17135"
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=0.0.0-dev-18153"
   },
   "devDependencies": {
+    "@opencode-ai/plugin": "^0.0.0-dev-18153",
     "@oxlint/plugins": "1.78.0",
-    "@types/bun": "^1.3.14",
+    "@types/bun": "latest",
     "oxlint": "1.78.0",
-    "typescript": "^5.9.2"
+    "typescript": "latest"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
   }
 }
