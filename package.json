@@ -4,8 +4,12 @@
   "description": "OpenCode V2 plugin that adds OpenAI and Gemini native web search providers to the built-in websearch tool.",
   "license": "MIT",
   "type": "module",
-  "exports": "./index.ts",
-  "files": ["index.ts", "src", "dist"],
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./source": "./index.ts"
+  },
+  "files": ["dist", "index.ts", "src"],
   "scripts": {
     "lint": "oxlint .",
     "test": "bun test",
@@ -15,11 +19,10 @@
     "check": "tsc --noEmit && bun test",
     "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin"
   },
-  "peerDependencies": {
-    "@opencode-ai/plugin": ">=0.0.0-dev-18153"
+  "dependencies": {
+    "@opencode-ai/plugin": "0.0.0-dev-18153"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^0.0.0-dev-18153",
     "@oxlint/plugins": "1.80.0",
     "@types/bun": "latest",
     "oxlint": "1.80.0",

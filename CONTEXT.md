@@ -51,8 +51,12 @@ LICENSE
   "description": "OpenCode V2 plugin that adds OpenAI and Gemini native web search providers to the built-in websearch tool.",
   "license": "MIT",
   "type": "module",
-  "exports": "./index.ts",
-  "files": ["index.ts", "src", "dist"],
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./source": "./index.ts"
+  },
+  "files": ["dist", "index.ts", "src"],
   "scripts": {
     "lint": "oxlint .",
     "test": "bun test",
@@ -62,11 +66,10 @@ LICENSE
     "check": "tsc --noEmit && bun test",
     "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin"
   },
-  "peerDependencies": {
-    "@opencode-ai/plugin": ">=0.0.0-dev-18153"
+  "dependencies": {
+    "@opencode-ai/plugin": "0.0.0-dev-18153"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^0.0.0-dev-18153",
     "@oxlint/plugins": "1.80.0",
     "@types/bun": "latest",
     "oxlint": "1.80.0",
@@ -87,15 +90,30 @@ LICENSE
 }
 ```
 
-### Dependency model
+### Packaging and runtime dependencies
 
-- `@opencode-ai/plugin` is a peer dependency (`>=0.0.0-dev-18153`) so the installed plugin package stays compatible with the host OpenCode V2 binary from the `dev` release channel.
-- The matching dev dependency (`^0.0.0-dev-18153`) supplies compile-time types and the runtime module for local tests.
-- The package entry point is TypeScript (`exports: "./index.ts"`).
-  OpenCode V2 loads plugin packages from `~/.cache/opencode/packages/<pkg>/node_modules` and executes the TypeScript entry point with Bun.
-- The `build` script bundles `index.ts` into `dist/index.js` with `@opencode-ai/plugin` marked external so the bundled output resolves the plugin API from the installed dependency tree.
-- Register the plugin through the config `plugins` array with an installable package spec such as `opencode-websearch-addons@1.0.4`.
-  Do not also place a copy in an auto-discovered local `plugins/*.js` file.
+The package manifest and build must follow strict rules to maintain compatibility with OpenCode V2:
+
+#### Dependency declaration
+
+- Declare `@opencode-ai/plugin` under `dependencies`.
+- Pin exact pre-release versions (such as `"0.0.0-dev-18153"` or `"beta"`).
+- Do not use loose semver caret ranges like `"^0.0.0-dev-18153"`. Loose ranges cause npm to resolve incompatible v1 releases (`1.18.x`) that lack root `Plugin` exports.
+- Do not mark `@opencode-ai/plugin` as an optional peer dependency. OpenCode V2's Bun runtime loads server plugins via standard dynamic import without synthetic module interception.
+
+#### Entrypoints and package contents
+
+- Set `"main": "./dist/index.js"`.
+- Set `"exports"`:
+  ```json
+  "exports": {
+    ".": "./dist/index.js",
+    "./source": "./index.ts"
+  }
+  ```
+- Build the standalone ESM bundle with `bun build index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin`.
+- Restrict `"files"` in `package.json` to `["dist", "index.ts", "src"]`.
+- Package managers automatically bundle `package.json`, `README.md`, and `LICENSE`. Internal agent specifications (`AGENTS.md`, `CONTEXT.md`) and tests remain excluded from the registry tarball.
 
 ### TypeScript configuration
 
