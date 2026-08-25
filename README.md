@@ -14,7 +14,27 @@ This plugin attaches OpenAI and Gemini native search providers to the built-in O
 - Handles cancellation and timeout requests for in-flight search operations.
 - Includes unit tests with mocked HTTP requests and opt-in live smoke tests.
 
-## Scope and Providers
+## Installation
+
+Add the plugin package to your `opencode.json` or `opencode.jsonc` configuration file.
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "opencode-websearch-addons@1.0.4"
+    }
+  ]
+}
+```
+
+Connect the `openai` or `google` integration in OpenCode before you run a search.
+The plugin resolves credentials from the active integration connection on every search.
+As a fallback, it reads an `apiKey` from the provider settings in your OpenCode configuration.
+Restart the OpenCode service after you install or update the plugin so every project location registers the providers.
+
+## Scope and providers
 
 The plugin registers two web search providers:
 
@@ -24,7 +44,7 @@ The plugin registers two web search providers:
 The plugin registers no custom tools.
 Provider selection remains in standard OpenCode configuration.
 
-## Provider Selection
+## Provider selection
 
 Select your web search provider in your OpenCode configuration file.
 
@@ -44,29 +64,31 @@ Missing credentials cause errors only when the selected provider executes.
 The plugin performs no authentication management.
 It does not store API keys or manage OAuth workflows.
 It resolves active connections from OpenCode at execution time.
+When no active connection exists, it falls back to the `apiKey` field in the provider settings of your OpenCode configuration.
 
-### OpenAI Authentication
+### OpenAI authentication
 
 OpenAI supports API key credentials and ChatGPT OAuth credentials.
 Key credentials send requests to `https://api.openai.com/v1/responses`.
 OAuth credentials send requests to `https://chatgpt.com/backend-api/codex/responses`.
 OAuth requests include the `originator: opencode` header and the `chatgpt-account-id` header when an account ID exists.
 
-### Google Authentication
+### Google authentication
 
 Google supports API key credentials and environment variables.
 Requests send the key in the `x-goog-api-key` HTTP header.
 OAuth authentication is not supported for Google in OpenCode V2.
 
-## Configuration Options
+## Configuration options
 
 Configure plugin options in your OpenCode configuration file under `plugins`.
 
 ```jsonc
 {
+  "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode-websearch-addons",
+      "package": "opencode-websearch-addons@1.0.4",
       "options": {
         "timeoutMs": 120000,
         "openai": {
@@ -85,9 +107,9 @@ Configure plugin options in your OpenCode configuration file under `plugins`.
 }
 ```
 
-### Options Reference
+### Options reference
 
-| Option | Type | Default | Validation Rules |
+| Option | Type | Default | Validation rules |
 | --- | --- | --- | --- |
 | `openai.model` | string | `"gpt-5.6-luna"` | Non-empty string up to 100 characters |
 | `openai.reasoningEffort` | string | `"medium"` | `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"` |
@@ -98,7 +120,7 @@ Configure plugin options in your OpenCode configuration file under `plugins`.
 | `google.searchTimeRange` | string | `"any"` | `"any"`, `"lastDay"`, `"lastWeek"`, `"lastMonth"`, or `"lastYear"` |
 | `timeoutMs` | number | `120000` | Integer from 100 through 120000 |
 
-### Search Features and Wire Mappings
+### Search features and wire mappings
 
 - `openai.searchContextSize` maps to `tools[].web_search.search_context_size`.
 - `openai.reasoningEffort` maps to `reasoning.effort`.
@@ -107,7 +129,7 @@ Configure plugin options in your OpenCode configuration file under `plugins`.
 - `google.thinkingLevel` maps to `generationConfig.thinkingConfig.thinkingLevel` using uppercase enum values (`MINIMAL`, `LOW`, `MEDIUM`, `HIGH`).
 - `google.searchTimeRange` computes `tools[].googleSearch.timeRangeFilter` ISO timestamp bounds for options other than `"any"`.
 
-## Output Format
+## Output format
 
 The plugin returns normalized results satisfying OpenCode's `WebSearch.Result` schema:
 
@@ -126,14 +148,38 @@ The `content` field contains model-generated text segments attributed to the sou
 `content` does not contain verbatim text excerpts from external web pages.
 The plugin returns an empty array `[]` when a request succeeds with no grounded web sources.
 
-## Development Workflow
+## Development workflow
 
-This package uses Bun for scripts and testing.
+This package uses Bun 1.2.0 or newer for scripts and testing.
 
-Run full type checking and unit tests:
+Install dependencies:
 
 ```sh
-bun check
+bun install
+```
+
+Run type checking:
+
+```sh
+bun run typecheck
+```
+
+Run the linter:
+
+```sh
+bun run lint
+```
+
+Run unit tests:
+
+```sh
+bun test
+```
+
+Run type checking and unit tests together:
+
+```sh
+bun run check
 ```
 
 Run agent unit tests:
@@ -148,8 +194,12 @@ Run live integration smoke tests against real provider APIs:
 LIVE=1 OPENAI_API_KEY=... GEMINI_API_KEY=... bun test:live
 ```
 
-Build the distribution output to `dist/`:
+Build the ESM distribution bundle to `dist/`:
 
 ```sh
 bun run build
 ```
+
+## Architecture
+
+See `CONTEXT.md` for the complete architecture specification, provider wire formats, and verification guides.
