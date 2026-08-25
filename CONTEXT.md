@@ -67,14 +67,23 @@ LICENSE
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^0.0.0-dev-18153",
-    "@oxlint/plugins": "1.78.0",
+    "@oxlint/plugins": "1.80.0",
     "@types/bun": "latest",
-    "oxlint": "1.78.0",
+    "oxlint": "1.80.0",
     "typescript": "latest"
   },
   "engines": {
     "bun": ">=1.2.0"
-  }
+  },
+  "author": {
+    "name": "Omkar Chandorkar",
+    "email": "gotenksIN@aospa.co"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gotenksIN/opencode-websearch-addons.git"
+  },
+  "homepage": "https://github.com/gotenksIN/opencode-websearch-addons"
 }
 ```
 

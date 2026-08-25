@@ -219,7 +219,6 @@ describe("registration", () => {
     ])
     expect(setDefault).not.toHaveBeenCalled()
     expect(toolTransform).not.toHaveBeenCalled()
-    expect(cleanup).toBeTypeOf("function")
     if (!cleanup) throw new Error("expected a cleanup function")
     await cleanup()
   })
@@ -717,9 +716,8 @@ describe("gemini", () => {
     const tool = body.tools[0]!
     expect(tool.googleSearch).toBeDefined()
     const timeRange = tool.googleSearch.timeRangeFilter!
-    expect(timeRange.startTime).toBeTypeOf("string")
-    expect(timeRange.endTime).toBeTypeOf("string")
-    expect(timeRange.startTime).toMatch(/Z$/)
+    expect(timeRange.startTime).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
+    expect(timeRange.endTime).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
     expect(body.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "HIGH" })
   })
 
@@ -885,7 +883,7 @@ describe("runtime contract", () => {
     const results = await openaiResults(defaultConfig, keyCredential)
     expect(results.length).toBeGreaterThan(0)
     for (const result of results) {
-      expect(result.url).toBeTypeOf("string")
+      expect(result.url.length).toBeGreaterThan(0)
       expect(result.time).toBeDefined()
       expect(Object.keys(result).sort()).toEqual(["content", "time", "title", "url"].sort())
     }

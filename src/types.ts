@@ -39,7 +39,7 @@ export interface InternalSource {
   published?: number
 }
 
-export function finiteNumber(value: JsonValue | undefined): number | undefined {
+function finiteNumber(value: JsonValue | undefined): number | undefined {
   // SAFETY: Number.isFinite returns true only for numeric values.
   return Number.isFinite(value) ? (value as number) : undefined
 }
