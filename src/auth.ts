@@ -1,6 +1,5 @@
-import type { Credential, Plugin } from "@opencode/plugin"
 import { isJSONString, isRecord } from "./types.js"
-import type { CatalogContext } from "./types.js"
+import type { CatalogContext, Credential, Plugin } from "./types.js"
 
 export type IntegrationContext = Pick<Plugin.Context, "integration"> & Partial<CatalogContext>
 

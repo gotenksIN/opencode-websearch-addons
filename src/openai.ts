@@ -1,8 +1,7 @@
-import type { Credential, Plugin, WebSearch } from "@opencode/plugin"
 import { resolveCredential } from "./auth.js"
 import type { OpenAIOptions } from "./config.js"
 import { isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
-import type { CatalogContext, InternalSource, JsonValue } from "./types.js"
+import type { CatalogContext, Credential, InternalSource, JsonValue, Plugin, WebSearch } from "./types.js"
 
 const publicEndpoint = "https://api.openai.com/v1/responses"
 const codexEndpoint = "https://chatgpt.com/backend-api/codex/responses"

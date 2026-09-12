@@ -1,4 +1,6 @@
-import type { Plugin, WebSearch } from "@opencode/plugin"
+import type { Credential, Plugin, WebSearch } from "@opencode/plugin"
+
+export type { Credential, Plugin, WebSearch }
 
 export type CatalogContext = Pick<Plugin.Context, "catalog">
 

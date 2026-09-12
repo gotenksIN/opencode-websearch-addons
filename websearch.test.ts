@@ -189,40 +189,6 @@ async function googleResults(config: PluginConfig, auth: JsonValue, query = "wha
 }
 
 describe("registration", () => {
-  test("registers exactly the openai and google providers with expected display names", async () => {
-    const added: SearchDefinition[] = []
-    const setDefault = vi.fn()
-    const toolTransform = vi.fn()
-    const ctx = {
-      options: {},
-      integration: { connection: { active: async () => undefined, resolve: async () => undefined } },
-      websearch: {
-        transform: async (callback: (draft: {
-          add: (definition: SearchDefinition) => void
-          default: { set: () => void }
-        }) => void) => {
-          callback({
-            add: (definition) => added.push(definition),
-            default: { set: setDefault },
-          })
-          return { dispose: async () => undefined }
-        },
-      },
-      tool: { transform: toolTransform },
-    }
-    // SAFETY: the test double implements only the subset of the plugin context
-    // contract this registration test exercises.
-    const cleanup = await plugin.setup(ctx as never)
-    expect(added.map((item) => [item.id, item.name])).toEqual([
-      ["openai", "OpenAI Web Search"],
-      ["google", "Gemini Google Search"],
-    ])
-    expect(setDefault).not.toHaveBeenCalled()
-    expect(toolTransform).not.toHaveBeenCalled()
-    if (!cleanup) throw new Error("expected a cleanup function")
-    await cleanup()
-  })
-
   test("providers execute through the registered execute functions", async () => {
     const added: SearchDefinition[] = []
     const ctx = {

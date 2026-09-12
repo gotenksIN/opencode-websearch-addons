@@ -1,8 +1,7 @@
-import type { Plugin, WebSearch } from "@opencode/plugin"
 import { resolveCredential } from "./auth.js"
 import type { GoogleOptions, SearchTimeRange } from "./config.js"
 import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
-import type { CatalogContext, InternalSource, JsonValue } from "./types.js"
+import type { CatalogContext, InternalSource, JsonValue, Plugin, WebSearch } from "./types.js"
 
 const apiBase = "https://generativelanguage.googleapis.com/v1beta"
 
