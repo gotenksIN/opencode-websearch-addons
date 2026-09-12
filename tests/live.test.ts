@@ -6,8 +6,11 @@ import { searchOpenAI } from "../src/openai.js"
 const live = process.env.LIVE === "1"
 
 const openAIKey = process.env.OPENAI_API_KEY
+
 const chatGPTAccess = process.env.CHATGPT_ACCESS_TOKEN
+
 const chatGPTAccountID = process.env.CHATGPT_ACCOUNT_ID
+
 const googleKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY
 
 interface OAuthCredential {
@@ -40,7 +43,9 @@ describe("live smoke tests", () => {
       "OpenCode AI CLI latest release",
       new AbortController().signal,
     )
+
     expect(results.length).toBeGreaterThan(0)
+
     for (const result of results) {
       expect(result.url).toBeTypeOf("string")
       expect(result.url.startsWith("http")).toBe(true)
@@ -56,9 +61,11 @@ describe("live smoke tests", () => {
       access: chatGPTAccess,
       expires: 4_000_000_000,
     }
+
     if (chatGPTAccountID) {
       credential.metadata = { accountID: chatGPTAccountID }
     }
+
     const results = await searchOpenAI(
       // SAFETY: liveContext supplies only the connection surface searchOpenAI uses; as never omits the unused IntegrationDomain members.
       liveContext(credential) as never,
@@ -67,7 +74,9 @@ describe("live smoke tests", () => {
       "OpenCode AI CLI latest release",
       new AbortController().signal,
     )
+
     expect(results.length).toBeGreaterThan(0)
+
     for (const result of results) {
       expect(result.url).toBeTypeOf("string")
       expect(result.time).toBeDefined()
@@ -83,7 +92,9 @@ describe("live smoke tests", () => {
       "OpenCode AI CLI latest release",
       new AbortController().signal,
     )
+
     expect(results.length).toBeGreaterThan(0)
+
     for (const result of results) {
       expect(result.url).toBeTypeOf("string")
       expect(result.url.startsWith("http")).toBe(true)

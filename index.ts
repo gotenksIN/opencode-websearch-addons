@@ -7,6 +7,7 @@ export default Plugin.define({
   id: "opencode-websearch-addons",
   async setup(ctx) {
     const config = parseConfig(ctx.options)
+
     const registration = await ctx.websearch.transform((draft) => {
       draft.add({
         id: "openai",
@@ -19,6 +20,7 @@ export default Plugin.define({
         execute: ({ query }, { signal }) => searchGoogle(ctx, config.google, config.timeoutMs, query, signal),
       })
     })
+
     return () => registration.dispose()
   },
 })

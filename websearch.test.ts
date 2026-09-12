@@ -65,8 +65,10 @@ interface GoogleSearchTool {
 function mockFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
   const implementation = async (input: string | URL | Request, init?: RequestInit) => {
     const url = input instanceof URL ? String(input) : input instanceof Request ? input.url : input
+
     return handler(url, init ?? {})
   }
+
   // SAFETY: bun's `typeof fetch` includes statics such as preconnect; the mock
   // implements only the callable contract these tests exercise.
   return vi.spyOn(globalThis, "fetch").mockImplementation(implementation as typeof fetch)
@@ -74,6 +76,7 @@ function mockFetch(handler: (url: string, init: RequestInit) => Response | Promi
 
 function sseResponse(events: readonly string[]): Response {
   const body = events.map((event) => `data: ${event}\n`).join("")
+
   return new Response(body, { headers: { "Content-Type": "text/event-stream" } })
 }
 
@@ -87,15 +90,19 @@ function bodyOf<T>(init: RequestInit): T {
 
 function headerValue(value: string | ReadonlyArray<string>): string {
   if (value instanceof Array) return value.join(", ")
+
   return value
 }
 
 function headersOf(init: RequestInit): Record<string, string> {
   const headers = init.headers
+
   if (headers === undefined) return {}
+
   if (headers instanceof Headers) {
     return headers.toJSON()
   }
+
   if (Array.isArray(headers)) {
     return Object.fromEntries(
       headers
@@ -103,6 +110,7 @@ function headersOf(init: RequestInit): Record<string, string> {
         .map((entry) => [entry[0]!, entry[1]!] as const),
     )
   }
+
   return Object.fromEntries(
     Object.entries(headers).map(([key, value]) => [key, headerValue(value)] as const),
   )
@@ -144,6 +152,7 @@ function connectionCtx(
 }
 
 const keyCredential = { type: "key", key: "sk-test-secret-key-123" } as const
+
 const oauthCredential = {
   type: "oauth",
   methodID: "chatgpt-browser",
@@ -191,6 +200,7 @@ async function googleResults(config: PluginConfig, auth: JsonValue, query = "wha
 describe("registration", () => {
   test("providers execute through the registered execute functions", async () => {
     const added: SearchDefinition[] = []
+
     const ctx = {
       options: {},
       integration: {
@@ -202,10 +212,12 @@ describe("registration", () => {
       websearch: {
         transform: async (callback: (draft: { add: (definition: SearchDefinition) => void }) => void) => {
           callback({ add: (definition) => added.push(definition) })
+
           return { dispose: async () => undefined }
         },
       },
     }
+
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
     // SAFETY: the test double implements only the subset of the plugin context
     // contract this registration test exercises.
@@ -238,6 +250,7 @@ describe("options", () => {
         searchTimeRange: "lastYear",
       },
     })
+
     expect(config.openai.reasoningEffort).toBe("max")
     expect(config.openai.searchContextSize).toBe("high")
     expect(config.openai.userLocation).toEqual({ city: "London", country: "GB", region: "England", timezone: "Europe/London" })
@@ -310,6 +323,7 @@ describe("authentication", () => {
       .fn()
       .mockResolvedValueOnce({ type: "credential", id: "cred_1", label: "API key" })
       .mockResolvedValueOnce({ type: "env", name: "OPENAI_API_KEY" })
+
     const resolve = vi.fn(async () => keyCredential)
     mockFetch((_url, _init) => jsonResponse({ output: [] }))
     const ctx = connectionCtx(active, resolve)
@@ -335,12 +349,14 @@ describe("authentication", () => {
   test("throws when credentials cannot be resolved or resolution fails", async () => {
     const unresolved = connectionCtx(async () => ({}), async () => undefined)
     await expect(resolveCredential(unresolved, "openai")).rejects.toThrow(/Unable to resolve openai credentials/)
+
     const failing = connectionCtx(
       async () => ({}),
       async () => {
         throw new Error("refresh failed")
       },
     )
+
     await expect(resolveCredential(failing, "google")).rejects.toThrow(/Unable to resolve google credentials/)
   })
 
@@ -454,6 +470,7 @@ describe("openai", () => {
         },
       },
     }
+
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
     // SAFETY: test double for the plugin context. catalog.provider.get throws
     // so the provider falls back to the official endpoint.
@@ -514,6 +531,7 @@ describe("openai", () => {
         },
       },
     ]
+
     const results = normalizeOutput(output)
     expect(results).toEqual([
       {
@@ -552,6 +570,7 @@ describe("openai", () => {
         ],
       },
     ]
+
     const results = normalizeOutput(output)
     expect(results).toEqual([
       { url: "https://example.com/short", title: "Short", content: "short", time: {} },
@@ -606,6 +625,7 @@ describe("openai", () => {
       JSON.stringify({ type: "response.completed", response: { id: "resp_1", output: [] } }),
       "[DONE]",
     ]
+
     mockFetch((_url, _init) => sseResponse(events))
     const results = await openaiResults(defaultConfig, keyCredential)
     expect(results.map((result) => result.url)).toEqual([
@@ -638,6 +658,7 @@ describe("openai", () => {
         },
       }),
     ]
+
     mockFetch((_url, _init) => sseResponse(events))
     const results = await openaiResults(defaultConfig, keyCredential)
     expect(results).toEqual([{ url: "https://example.com/alpha", title: "Alpha", content: "Alpha", time: {} }])
@@ -667,6 +688,7 @@ describe("openai", () => {
         response: { error: { message: `server echoed ${keyCredential.key}` } },
       }),
     ]
+
     mockFetch((_url, _init) => sseResponse(events))
     await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(
       /OpenAI web search failed: server echoed \[REDACTED\]/,
@@ -721,6 +743,7 @@ describe("gemini", () => {
       ["medium", "MEDIUM"],
       ["high", "HIGH"],
     ]
+
     for (const [option, wire] of levels) {
       const fetchSpy = mockFetch((_url, _init) => sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]))
       const config = { ...defaultConfig, google: { ...defaultConfig.google, thinkingLevel: option } }
@@ -755,6 +778,7 @@ describe("gemini", () => {
         ],
       },
     }
+
     // SAFETY: fixture mirrors the merged stream shape normalizeGenerateContent consumes.
     const results = normalizeGenerateContent(merged as never)
     expect(results).toEqual([
@@ -780,6 +804,7 @@ describe("gemini", () => {
 
   test("merges text and grounding across streamed chunks", async () => {
     const chunk1 = { candidates: [{ content: { parts: [{ text: "Alpha facts are here" }] } }] }
+
     const chunk2 = {
       candidates: [
         {
@@ -792,6 +817,7 @@ describe("gemini", () => {
         },
       ],
     }
+
     mockFetch((_url, _init) => sseResponse([JSON.stringify(chunk1), JSON.stringify(chunk2)]))
     const results = await googleResults(defaultConfig, keyCredential)
     expect(results).toEqual([
@@ -816,6 +842,7 @@ describe("gemini", () => {
         ],
       },
     }
+
     // SAFETY: fixture mirrors the merged stream shape normalizeGenerateContent consumes.
     const results = normalizeGenerateContent(merged as never)
     expect(results.map((result) => result.url)).toEqual(["https://example.com/a", "https://example.com/b"])
@@ -832,6 +859,7 @@ describe("gemini", () => {
     const blocked = {
       candidates: [{ content: { parts: [{ text: "nope" }] }, finishReason: "BLOCKED" }],
     }
+
     mockFetch((_url, _init) => sseResponse([JSON.stringify(blocked)]))
     await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/blocked by the provider/)
 
@@ -863,9 +891,11 @@ describe("runtime contract", () => {
         ],
       },
     ]
+
     mockFetch((_url, _init) => jsonResponse({ output }))
     const results = await openaiResults(defaultConfig, keyCredential)
     expect(results.length).toBeGreaterThan(0)
+
     for (const result of results) {
       expect(result.url.length).toBeGreaterThan(0)
       expect(result.time).toBeDefined()
@@ -877,12 +907,16 @@ describe("runtime contract", () => {
     const controller = new AbortController()
     mockFetch((_url, init) => {
       const signal = init.signal
+
       if (!signal) throw new Error("expected an abort signal")
+
       if (signal.aborted) return Promise.reject(signal.reason)
+
       return new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason))
       })
     })
+
     const request = searchOpenAI(
       providerCtx({ connection: {}, credential: keyCredential }),
       defaultConfig.openai,
@@ -890,6 +924,7 @@ describe("runtime contract", () => {
       "q",
       controller.signal,
     )
+
     const reason = new Error("cancelled by opencode")
     controller.abort(reason)
     await expect(request).rejects.toThrow("cancelled by opencode")
@@ -898,8 +933,11 @@ describe("runtime contract", () => {
   test("timeout cancellation aborts the fetch signal", async () => {
     mockFetch((_url, init) => {
       const signal = init.signal
+
       if (!signal) throw new Error("expected an abort signal")
+
       if (signal.aborted) return Promise.reject(signal.reason)
+
       return new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason))
       })

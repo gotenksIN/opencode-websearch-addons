@@ -8,12 +8,14 @@ export async function resolveCredential(
   integrationID: string,
 ): Promise<Credential.Value> {
   const connection = await ctx.integration.connection.active(integrationID)
+
   if (!connection) {
     if (ctx.catalog) {
       try {
         const provider = await ctx.catalog.provider.get({ providerID: integrationID })
         const settings = provider?.data?.settings
         const apiKey = settings !== undefined && isRecord(settings) ? settings["apiKey"] : undefined
+
         if (apiKey !== undefined && isJSONString(apiKey) && apiKey.trim().length > 0) {
           return { type: "key", key: apiKey.trim() }
         }
@@ -21,9 +23,12 @@ export async function resolveCredential(
         // Fall back to standard connection error
       }
     }
+
     throw new Error(`No active ${integrationID} connection. Connect the ${integrationID} integration in OpenCode first.`)
   }
+
   let credential: Credential.Value | undefined
+
   try {
     credential = await ctx.integration.connection.resolve(connection)
   } catch {
@@ -31,8 +36,10 @@ export async function resolveCredential(
       `Unable to resolve ${integrationID} credentials. Reconnect the ${integrationID} integration and try again.`,
     )
   }
+
   if (!credential) {
     throw new Error(`Unable to resolve ${integrationID} credentials. Reconnect the ${integrationID} integration and try again.`)
   }
+
   return credential
 }
