@@ -1,7 +1,7 @@
 import type { Credential, Plugin, WebSearch } from "@opencode/plugin"
 import { resolveCredential } from "./auth.js"
 import type { OpenAIOptions } from "./config.js"
-import { isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sliceSpan, toResult } from "./types.js"
+import { isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
 import type { CatalogContext, InternalSource, JsonValue } from "./types.js"
 
 const publicEndpoint = "https://api.openai.com/v1/responses"
@@ -32,6 +32,7 @@ export async function searchOpenAI(
         config,
         query,
         controller.signal,
+        [credential.key],
       )
     }
     if (credential.type === "oauth") {
@@ -46,6 +47,7 @@ export async function searchOpenAI(
         config,
         query,
         controller.signal,
+        [credential.access, credential.refresh],
       )
     }
     throw new Error("Unsupported OpenAI credential type")
@@ -65,6 +67,7 @@ async function runOpenAIRequest(
   config: OpenAIOptions,
   query: string,
   signal: AbortSignal,
+  credentials: readonly string[],
 ): Promise<readonly WebSearch.Result[]> {
   const headers: Record<string, string> = {}
   headers.Authorization = auth.authorization
@@ -78,9 +81,9 @@ async function runOpenAIRequest(
     signal,
   })
   if (!response.ok) {
-    await providerError(response, "OpenAI")
+    await providerError(response, "OpenAI", credentials)
   }
-  const items = await collectOutputItems(response)
+  const items = await collectOutputItems(response, credentials)
   return normalizeOutput(items)
 }
 
@@ -103,7 +106,7 @@ function buildResponsesBody(config: OpenAIOptions, query: string) {
   return body
 }
 
-async function collectOutputItems(response: Response): Promise<JsonValue[]> {
+async function collectOutputItems(response: Response, credentials: readonly string[]): Promise<JsonValue[]> {
   const contentType = response.headers.get("content-type") ?? ""
   if (!contentType.includes("text/event-stream")) {
     const body = await readJSON(response)
@@ -123,7 +126,7 @@ async function collectOutputItems(response: Response): Promise<JsonValue[]> {
       const responseRecord = isRecord(payload.response) ? payload.response : {}
       const error = isRecord(responseRecord.error) ? responseRecord.error : {}
       const message = isJSONString(error.message) ? error.message : "unknown error"
-      throw new Error(`OpenAI web search failed: ${message}`)
+      throw new Error(`OpenAI web search failed: ${sanitizeProviderMessage(message, credentials)}`)
     }
   }
   return items.length > 0 ? items : completed ?? []

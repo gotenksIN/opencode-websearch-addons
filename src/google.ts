@@ -1,7 +1,7 @@
 import type { Plugin, WebSearch } from "@opencode/plugin"
 import { resolveCredential } from "./auth.js"
 import type { GoogleOptions, SearchTimeRange } from "./config.js"
-import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sliceSpan, toResult } from "./types.js"
+import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
 import type { CatalogContext, InternalSource, JsonValue } from "./types.js"
 
 const apiBase = "https://generativelanguage.googleapis.com/v1beta"
@@ -45,9 +45,9 @@ export async function searchGoogle(
       signal: controller.signal,
     })
     if (!response.ok) {
-      await providerError(response, "Gemini")
+      await providerError(response, "Gemini", [credential.key])
     }
-    const merged = await collectGenerateContent(response)
+    const merged = await collectGenerateContent(response, [credential.key])
     return normalizeGenerateContent(merged)
   } finally {
     clearTimeout(timer)
@@ -102,24 +102,24 @@ interface MergedCandidate {
   finishReason?: string
 }
 
-async function collectGenerateContent(response: Response): Promise<MergedCandidate> {
+async function collectGenerateContent(response: Response, credentials: readonly string[]): Promise<MergedCandidate> {
   const contentType = response.headers.get("content-type") ?? ""
   if (!contentType.includes("text/event-stream")) {
     const body = await readJSON(response)
-    return mergeChunk({ parts: [] }, body)
+    return mergeChunk({ parts: [] }, body, credentials)
   }
   const merged: MergedCandidate = { parts: [] }
   for await (const payload of parseSSE(response, "Gemini")) {
-    mergeChunk(merged, payload)
+    mergeChunk(merged, payload, credentials)
   }
   return merged
 }
 
-function mergeChunk(merged: MergedCandidate, payload: JsonValue): MergedCandidate {
+function mergeChunk(merged: MergedCandidate, payload: JsonValue, credentials: readonly string[]): MergedCandidate {
   if (!isRecord(payload)) return merged
   if (isRecord(payload.error)) {
     const message = isJSONString(payload.error.message) ? payload.error.message : "unknown error"
-    throw new Error(`Gemini web search failed: ${message}`)
+    throw new Error(`Gemini web search failed: ${sanitizeProviderMessage(message, credentials)}`)
   }
   if (!Array.isArray(payload.candidates) || payload.candidates.length === 0) return merged
   const candidate = payload.candidates[0]

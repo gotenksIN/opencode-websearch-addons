@@ -69,7 +69,24 @@ export async function readJSON(response: Response): Promise<JsonValue> {
   }
 }
 
-export async function providerError(response: Response, provider: string): Promise<never> {
+export function sanitizeProviderMessage(message: string, credentials: readonly string[] = []): string {
+  let sanitized = message
+    .replace(
+      /\b(api[ _-]?key|x-goog-api-key|authorization|access[ _-]?token|refresh[ _-]?token|key)\b(\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1$2[REDACTED]",
+    )
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+  for (const credential of credentials) {
+    if (credential.length > 0) sanitized = sanitized.split(credential).join("[REDACTED]")
+  }
+  return sanitized.replace(/\b(?:sk|pk)-[A-Za-z0-9._-]{6,}\b/gi, "[REDACTED]")
+}
+
+export async function providerError(
+  response: Response,
+  provider: string,
+  credentials: readonly string[] = [],
+): Promise<never> {
   let detail: string | undefined
   try {
     const body = await readJSON(response)
@@ -81,7 +98,8 @@ export async function providerError(response: Response, provider: string): Promi
   } catch {
     // Keep the status-only message when the body is not parseable.
   }
-  throw new Error(`${provider} web search failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`)
+  const sanitizedDetail = detail ? sanitizeProviderMessage(detail, credentials) : undefined
+  throw new Error(`${provider} web search failed (HTTP ${response.status})${sanitizedDetail ? `: ${sanitizedDetail}` : ""}`)
 }
 
 export async function* parseSSE(

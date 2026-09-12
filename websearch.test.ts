@@ -386,12 +386,16 @@ describe("authentication", () => {
   })
 
   test("never exposes credential values in errors", async () => {
-    mockFetch((_url, _init) => jsonResponse({ error: { message: "provider says no" } }, 401))
+    const providerMessage = `Authorization: Bearer ${keyCredential.key}; api_key=${keyCredential.key}`
+    mockFetch((_url, _init) => jsonResponse({ error: { message: providerMessage } }, 401))
     await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(
-      /OpenAI web search failed \(HTTP 401\): provider says no/,
+      /OpenAI web search failed \(HTTP 401\): Authorization: \[REDACTED\]; api_key=\[REDACTED\]/,
     )
-    mockFetch((_url, _init) => jsonResponse({ error: { message: "provider says no" } }, 401))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(/sk-test-secret-key-123/)
+    await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
+    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(
+      /Gemini web search failed \(HTTP 401\): Authorization: \[REDACTED\]; api_key=\[REDACTED\]/,
+    )
+    await expect(googleResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
   })
 
   test("picks up a changed active connection on the next execution", async () => {
@@ -689,10 +693,16 @@ describe("openai", () => {
 
   test("throws on a failed SSE event", async () => {
     const events = [
-      JSON.stringify({ type: "response.failed", response: { error: { message: "server exploded" } } }),
+      JSON.stringify({
+        type: "response.failed",
+        response: { error: { message: `server echoed ${keyCredential.key}` } },
+      }),
     ]
     mockFetch((_url, _init) => sseResponse(events))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/OpenAI web search failed: server exploded/)
+    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(
+      /OpenAI web search failed: server echoed \[REDACTED\]/,
+    )
+    await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
   })
 
   test("throws on malformed stream events", async () => {
@@ -859,8 +869,13 @@ describe("gemini", () => {
     mockFetch((_url, _init) => jsonResponse({ error: { message: "API key not valid" } }, 400))
     await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/Gemini web search failed \(HTTP 400\): API key not valid/)
 
-    mockFetch((_url, _init) => sseResponse([JSON.stringify({ error: { message: "stream exploded" } })]))
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/Gemini web search failed: stream exploded/)
+    mockFetch((_url, _init) =>
+      sseResponse([JSON.stringify({ error: { message: `stream echoed ${keyCredential.key}` } })]),
+    )
+    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(
+      /Gemini web search failed: stream echoed \[REDACTED\]/,
+    )
+    await expect(googleResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
   })
 })
 
