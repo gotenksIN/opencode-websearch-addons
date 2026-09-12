@@ -23,7 +23,7 @@ Add the plugin package to your `opencode.json` or `opencode.jsonc` configuration
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode-websearch-addons@1.0.5"
+      "package": "opencode-websearch-addons@1.0.6"
     }
   ]
 }
@@ -88,7 +88,7 @@ Configure plugin options in your OpenCode configuration file under `plugins`.
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode-websearch-addons@1.0.5",
+      "package": "opencode-websearch-addons@1.0.6",
       "options": {
         "timeoutMs": 120000,
         "openai": {
