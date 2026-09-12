@@ -1,4 +1,4 @@
-import { Plugin } from "@opencode-ai/plugin"
+import { Plugin } from "@opencode/plugin"
 import { parseConfig } from "./src/config.js"
 import { searchGoogle } from "./src/google.js"
 import { searchOpenAI } from "./src/openai.js"

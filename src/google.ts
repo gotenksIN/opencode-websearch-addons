@@ -1,4 +1,4 @@
-import type { Plugin, WebSearch } from "@opencode-ai/plugin"
+import type { Plugin, WebSearch } from "@opencode/plugin"
 import { resolveCredential } from "./auth.js"
 import type { GoogleOptions, SearchTimeRange } from "./config.js"
 import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sliceSpan, toResult } from "./types.js"

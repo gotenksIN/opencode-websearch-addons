@@ -1,4 +1,4 @@
-import type { Plugin, WebSearch } from "@opencode-ai/plugin"
+import type { Plugin, WebSearch } from "@opencode/plugin"
 
 export type CatalogContext = Pick<Plugin.Context, "catalog">
 

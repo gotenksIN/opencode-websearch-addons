@@ -1,4 +1,4 @@
-import type { Credential, Plugin, WebSearch } from "@opencode-ai/plugin"
+import type { Credential, Plugin, WebSearch } from "@opencode/plugin"
 import { resolveCredential } from "./auth.js"
 import type { OpenAIOptions } from "./config.js"
 import { isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sliceSpan, toResult } from "./types.js"

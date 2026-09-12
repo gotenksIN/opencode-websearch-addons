@@ -1,4 +1,4 @@
-import type { Credential, Plugin } from "@opencode-ai/plugin"
+import type { Credential, Plugin } from "@opencode/plugin"
 import { isJSONString, isRecord } from "./types.js"
 import type { CatalogContext } from "./types.js"
 

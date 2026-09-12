@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "bun:test"
-import type { Plugin, WebSearch } from "@opencode-ai/plugin"
+import type { Plugin, WebSearch } from "@opencode/plugin"
 import plugin from "./index.js"
 import { defaultConfig, parseConfig } from "./src/config.js"
 import type { PluginConfig, ThinkingLevel } from "./src/config.js"

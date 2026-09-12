@@ -64,10 +64,10 @@ LICENSE
     "test:live": "LIVE=1 bun test",
     "typecheck": "tsc --noEmit",
     "check": "tsc --noEmit && bun test",
-    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin"
+    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-dev-18153"
+    "@opencode/plugin": "2.0.2"
   },
   "devDependencies": {
     "@oxlint/plugins": "1.80.0",
@@ -96,10 +96,9 @@ The package manifest and build must follow strict rules to maintain compatibilit
 
 #### Dependency declaration
 
-- Declare `@opencode-ai/plugin` under `dependencies`.
-- Pin exact pre-release versions (such as `"0.0.0-dev-18153"` or `"beta"`).
-- Do not use loose semver caret ranges like `"^0.0.0-dev-18153"`. Loose ranges cause npm to resolve incompatible v1 releases (`1.18.x`) that lack root `Plugin` exports.
-- Do not mark `@opencode-ai/plugin` as an optional peer dependency. OpenCode V2's Bun runtime loads server plugins via standard dynamic import without synthetic module interception.
+- Declare `@opencode/plugin` under `dependencies`.
+- Pin exact versions (such as `"2.0.2"`).
+- Do not mark `@opencode/plugin` as an optional peer dependency. OpenCode V2's Bun runtime loads server plugins via standard dynamic import without synthetic module interception.
 
 #### Entrypoints and package contents
 
@@ -111,7 +110,7 @@ The package manifest and build must follow strict rules to maintain compatibilit
     "./source": "./index.ts"
   }
   ```
-- Build the standalone ESM bundle with `bun build index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin`.
+- Build the standalone ESM bundle with `bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin`.
 - Restrict `"files"` in `package.json` to `["dist", "index.ts", "src"]`.
 - Package managers automatically bundle `package.json`, `README.md`, and `LICENSE`. Internal agent specifications (`AGENTS.md`, `CONTEXT.md`) and tests remain excluded from the registry tarball.
 
@@ -155,7 +154,7 @@ Run `bun run lint` for a zero-warning, zero-error gate.
 The plugin default export registers both providers inside `ctx.websearch.transform`:
 
 ```ts
-import { Plugin } from "@opencode-ai/plugin"
+import { Plugin } from "@opencode/plugin"
 import { parseConfig } from "./src/config.js"
 import { searchGoogle } from "./src/google.js"
 import { searchOpenAI } from "./src/openai.js"
@@ -247,7 +246,7 @@ OpenCode manages integration connections for `openai` and `google`.
 The plugin resolves integration credentials on every execution using `resolveCredential`:
 
 ```ts
-import type { Credential, Plugin } from "@opencode-ai/plugin"
+import type { Credential, Plugin } from "@opencode/plugin"
 import { isJSONString, isRecord } from "./types.js"
 import type { CatalogContext } from "./types.js"
 
