@@ -74,8 +74,8 @@ export async function readJSON(response: Response): Promise<JsonValue> {
 export function sanitizeProviderMessage(message: string, credentials: readonly string[] = []): string {
   let sanitized = message
     .replace(
-      /\b(api[ _-]?key|x-goog-api-key|authorization|access[ _-]?token|refresh[ _-]?token|key)\b(\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-      "$1$2[REDACTED]",
+      /(["']?)(\b(?:api[ _-]?key|x-goog-api-key|authorization|access[ _-]?token|refresh[ _-]?token|key)\b)\1(\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1$2$1$3[REDACTED]",
     )
     .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
   for (const credential of credentials) {

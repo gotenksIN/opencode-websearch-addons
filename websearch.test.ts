@@ -352,16 +352,19 @@ describe("authentication", () => {
   })
 
   test("never exposes credential values in errors", async () => {
-    const providerMessage = `Authorization: Bearer ${keyCredential.key}; api_key=${keyCredential.key}`
+    const upstreamCredential = "gateway-secret-789"
+    const providerMessage = `Authorization: Bearer ${keyCredential.key}; {"api_key":"${upstreamCredential}"}`
     mockFetch((_url, _init) => jsonResponse({ error: { message: providerMessage } }, 401))
     await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(
-      /OpenAI web search failed \(HTTP 401\): Authorization: \[REDACTED\]; api_key=\[REDACTED\]/,
+      /OpenAI web search failed \(HTTP 401\): Authorization: \[REDACTED\]; {"api_key":\[REDACTED\]}/,
     )
     await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
+    await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(upstreamCredential)
     await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(
-      /Gemini web search failed \(HTTP 401\): Authorization: \[REDACTED\]; api_key=\[REDACTED\]/,
+      /Gemini web search failed \(HTTP 401\): Authorization: \[REDACTED\]; {"api_key":\[REDACTED\]}/,
     )
     await expect(googleResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
+    await expect(googleResults(defaultConfig, keyCredential)).rejects.not.toThrow(upstreamCredential)
   })
 
   test("picks up a changed active connection on the next execution", async () => {
