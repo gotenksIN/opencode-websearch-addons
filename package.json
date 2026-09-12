@@ -17,6 +17,7 @@
     "test:live": "LIVE=1 bun test",
     "typecheck": "tsc --noEmit",
     "check": "tsc --noEmit && bun test",
+    "prepack": "bun run build",
     "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin"
   },
   "dependencies": {
