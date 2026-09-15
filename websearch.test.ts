@@ -732,6 +732,38 @@ describe("openai", () => {
     await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
   })
 
+  test("throws on a top-level stream error event", async () => {
+    const events = [
+      JSON.stringify({
+        type: "error",
+        error: { message: `server echoed ${keyCredential.key}` },
+      }),
+    ]
+
+    mockFetch((_url, _init) => sseResponse(events))
+    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(
+      /OpenAI web search failed: server echoed \[REDACTED\]/,
+    )
+    await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
+  })
+
+  test("rejects a stream that ends before a terminal event", async () => {
+    const events = [
+      JSON.stringify({
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          type: "web_search_call",
+          id: "ws_1",
+          action: { sources: [{ type: "url", url: "https://example.com/partial" }] },
+        },
+      }),
+    ]
+
+    mockFetch((_url, _init) => sseResponse(events))
+    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/stream ended without a terminal event/)
+  })
+
   test("throws on malformed stream events", async () => {
     mockFetch((_url, _init) => sseResponse(["this is not json"]))
     await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/malformed stream event/)

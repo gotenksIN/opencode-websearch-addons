@@ -144,12 +144,17 @@ export async function* parseSSE(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
+  let complete = false
 
   try {
     for (;;) {
       const { done, value } = await reader.read()
 
-      if (done) break
+      if (done) {
+        complete = true
+        break
+      }
+
       buffer += decoder.decode(value, { stream: true })
       let newline: number
 
@@ -176,6 +181,14 @@ export async function* parseSSE(
       }
     }
   } finally {
+    if (!complete) {
+      try {
+        await reader.cancel()
+      } catch {
+        // Preserve the provider or parsing error that stopped consumption.
+      }
+    }
+
     reader.releaseLock()
   }
 }

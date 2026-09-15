@@ -131,30 +131,74 @@ async function collectOutputItems(response: Response, credentials: readonly stri
 
     if (!isRecord(body)) throw new Error("Invalid OpenAI web search response: body is not an object")
 
-    return Array.isArray(body.output) ? body.output : []
+    if (body.status === "failed" || isRecord(body.error)) {
+      const message = streamErrorMessage(body)
+      throw new Error(`OpenAI web search failed: ${sanitizeProviderMessage(message, credentials)}`)
+    }
+
+    if (body.error !== undefined && body.error !== null) {
+      throw new Error("Invalid OpenAI web search response: malformed error")
+    }
+
+    if (!Array.isArray(body.output)) {
+      throw new Error("Invalid OpenAI web search response: missing output")
+    }
+
+    return body.output
   }
 
   const items: JsonValue[] = []
   let completed: JsonValue[] | undefined
+  let terminal = false
 
   for await (const payload of parseSSE(response, "OpenAI", true)) {
     if (!isRecord(payload)) continue
 
     if (payload.type === "response.output_item.done" && isRecord(payload.item)) {
       items.push(payload.item)
-    } else if (payload.type === "response.completed") {
+    } else if (payload.type === "response.completed" || payload.type === "response.incomplete") {
+      terminal = true
       const output = isRecord(payload.response) ? payload.response.output : undefined
 
       if (Array.isArray(output)) completed = output
-    } else if (payload.type === "response.failed") {
-      const responseRecord = isRecord(payload.response) ? payload.response : {}
-      const error = isRecord(responseRecord.error) ? responseRecord.error : {}
-      const message = isJSONString(error.message) ? error.message : "unknown error"
+      break
+    } else if (payload.type === "response.failed" || payload.type === "error") {
+      const message = streamErrorMessage(payload)
       throw new Error(`OpenAI web search failed: ${sanitizeProviderMessage(message, credentials)}`)
     }
   }
 
+  if (!terminal) {
+    throw new Error("Invalid OpenAI web search response: stream ended without a terminal event")
+  }
+
   return items.length > 0 ? items : completed ?? []
+}
+
+function streamErrorMessage(payload: Record<string, JsonValue>): string {
+  const response = isRecord(payload.response) ? payload.response : {}
+  const responseError = isRecord(response.error) ? response.error : {}
+  const error = isRecord(payload.error) ? payload.error : {}
+  let message: string | undefined
+  let code: string | undefined
+
+  for (const value of [payload.message, error.message, responseError.message]) {
+    if (isJSONString(value) && value.length > 0) {
+      message = value
+      break
+    }
+  }
+
+  for (const value of [payload.code, error.code, responseError.code]) {
+    if (isJSONString(value) && value.length > 0) {
+      code = value
+      break
+    }
+  }
+
+  if (message && code) return `${code}: ${message}`
+
+  return message ?? code ?? "unknown error"
 }
 
 interface AccumulatedSource {
