@@ -1,14 +1,15 @@
 import { resolveCredential } from "./auth.js"
+import type { IntegrationContext } from "./auth.js"
 import type { OpenAIOptions } from "./config.js"
 import { isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
-import type { CatalogContext, Credential, InternalSource, JsonValue, Plugin, WebSearch } from "./types.js"
+import type { Credential, InternalSource, JsonValue, WebSearch } from "./types.js"
 
 const publicEndpoint = "https://api.openai.com/v1/responses"
 
 const codexEndpoint = "https://chatgpt.com/backend-api/codex/responses"
 
 export async function searchOpenAI(
-  ctx: CatalogContext & Pick<Plugin.Context, "integration">,
+  ctx: IntegrationContext,
   config: OpenAIOptions,
   timeoutMs: number,
   query: string,

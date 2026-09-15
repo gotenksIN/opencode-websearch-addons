@@ -1,7 +1,8 @@
 import { resolveCredential } from "./auth.js"
+import type { IntegrationContext } from "./auth.js"
 import type { GoogleOptions, SearchTimeRange } from "./config.js"
 import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
-import type { CatalogContext, InternalSource, JsonValue, Plugin, WebSearch } from "./types.js"
+import type { InternalSource, JsonValue, WebSearch } from "./types.js"
 
 const apiBase = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -13,7 +14,7 @@ const thinkingLevelWire = {
 }
 
 export async function searchGoogle(
-  ctx: CatalogContext & Pick<Plugin.Context, "integration">,
+  ctx: IntegrationContext,
   config: GoogleOptions,
   timeoutMs: number,
   query: string,

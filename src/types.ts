@@ -2,7 +2,22 @@ import type { Credential, Plugin, WebSearch } from "@opencode/plugin"
 
 export type { Credential, Plugin, WebSearch }
 
-export type CatalogContext = Pick<Plugin.Context, "catalog">
+interface ProviderSettingsResponse {
+  readonly data?: {
+    readonly settings?: unknown
+  }
+}
+
+interface ProviderSettingsLookup {
+  get(input: { readonly providerID: string }): Promise<ProviderSettingsResponse | undefined>
+}
+
+export interface ProviderSettingsContext {
+  readonly catalog?: {
+    readonly provider: ProviderSettingsLookup
+  }
+  readonly provider?: ProviderSettingsLookup
+}
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { readonly [key: string]: JsonValue | undefined }
 
@@ -15,11 +30,15 @@ export function isJSONNumber(value: JsonValue | undefined): value is number {
 }
 
 export async function providerBaseURL(
-  ctx: CatalogContext,
+  ctx: ProviderSettingsContext,
   providerID: string,
 ): Promise<string | undefined> {
+  const lookup = ctx.provider ?? ctx.catalog?.provider
+
+  if (!lookup) return undefined
+
   try {
-    const result = await ctx.catalog.provider.get({ providerID })
+    const result = await lookup.get({ providerID })
     const settings = result?.data?.settings
     const baseURL = settings !== undefined && isRecord(settings) ? settings["baseURL"] : undefined
 
@@ -28,11 +47,11 @@ export async function providerBaseURL(
 
     return trimmed.length > 0 ? trimmed : undefined
   } catch {
-    return undefined
+    throw new Error(`Unable to read ${providerID} provider settings. Try again.`)
   }
 }
 
-export function isRecord(value: JsonValue | undefined): value is Record<string, JsonValue> {
+export function isRecord(value: unknown): value is Record<string, JsonValue> {
   return value instanceof Object && !Array.isArray(value)
 }
 

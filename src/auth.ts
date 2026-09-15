@@ -1,7 +1,7 @@
 import { isJSONString, isRecord } from "./types.js"
-import type { CatalogContext, Credential, Plugin } from "./types.js"
+import type { Credential, Plugin, ProviderSettingsContext } from "./types.js"
 
-export type IntegrationContext = Pick<Plugin.Context, "integration"> & Partial<CatalogContext>
+export type IntegrationContext = Pick<Plugin.Context, "integration"> & ProviderSettingsContext
 
 export async function resolveCredential(
   ctx: IntegrationContext,
@@ -10,9 +10,11 @@ export async function resolveCredential(
   const connection = await ctx.integration.connection.active(integrationID)
 
   if (!connection) {
-    if (ctx.catalog) {
+    const lookup = ctx.provider ?? ctx.catalog?.provider
+
+    if (lookup) {
       try {
-        const provider = await ctx.catalog.provider.get({ providerID: integrationID })
+        const provider = await lookup.get({ providerID: integrationID })
         const settings = provider?.data?.settings
         const apiKey = settings !== undefined && isRecord(settings) ? settings["apiKey"] : undefined
 

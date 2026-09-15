@@ -7,7 +7,7 @@ import { searchGoogle } from "./src/google.js"
 import { normalizeGenerateContent, timeRangeFilterFor } from "./src/google.js"
 import { normalizeOutput, searchOpenAI } from "./src/openai.js"
 import { resolveCredential } from "./src/auth.js"
-import type { CatalogContext } from "./src/types.js"
+import type { ProviderSettingsContext } from "./src/types.js"
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -119,7 +119,7 @@ function headersOf(init: RequestInit): Record<string, string> {
 function providerCtx(
   auth: { readonly connection?: JsonValue; readonly credential?: JsonValue },
   settings?: Record<string, JsonValue>,
-): CatalogContext & Pick<Plugin.Context, "integration"> {
+): ProviderSettingsContext & Pick<Plugin.Context, "integration"> {
   // SAFETY: test double for the plugin context. The connection methods return
   // the fixture values regardless of their arguments, which matches the subset
   // of the integration contract these unit tests exercise.
@@ -141,7 +141,7 @@ function providerCtx(
 function connectionCtx(
   active: () => Promise<JsonValue | undefined>,
   resolve: () => Promise<JsonValue | undefined>,
-): CatalogContext & Pick<Plugin.Context, "integration"> {
+): ProviderSettingsContext & Pick<Plugin.Context, "integration"> {
   // SAFETY: test double for the plugin context. It implements only the
   // connection subset used by resolveCredential and has no catalog fallback.
   return {
@@ -340,6 +340,40 @@ describe("authentication", () => {
     expect(credential).toEqual({ type: "key", key: "catalog-api-key" })
   })
 
+  test("reads credentials and base URL from the current provider domain", async () => {
+    const ctx = {
+      integration: {
+        connection: {
+          active: async () => undefined,
+          resolve: async () => undefined,
+        },
+      },
+      provider: {
+        get: async () => ({
+          data: {
+            settings: {
+              apiKey: "provider-api-key",
+              baseURL: "https://example.com/google/v1beta",
+            },
+          },
+        }),
+      },
+    }
+
+    const fetchSpy = mockFetch((_url, _init) =>
+      sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]),
+    )
+
+    // SAFETY: the test double implements the integration and provider surfaces
+    // that searchGoogle uses.
+    await searchGoogle(ctx as never, defaultConfig.google, defaultConfig.timeoutMs, "q", new AbortController().signal)
+
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe(
+      "https://example.com/google/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
+    )
+    expect(headersOf(fetchSpy.mock.calls[0]![1]!)["x-goog-api-key"]).toBe("provider-api-key")
+  })
+
   test("throws a precise error when no active connection exists", async () => {
     const ctx = connectionCtx(async () => undefined, async () => undefined)
     await expect(resolveCredential(ctx, "openai")).rejects.toThrow(/No active openai connection/)
@@ -454,7 +488,7 @@ describe("openai", () => {
     expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://chatgpt.com/backend-api/codex/responses")
   })
 
-  test("falls back to the official endpoint when provider settings are unavailable", async () => {
+  test("does not send credentials when provider settings cannot be read", async () => {
     const ctx = {
       integration: {
         connection: {
@@ -473,9 +507,11 @@ describe("openai", () => {
 
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
     // SAFETY: test double for the plugin context. catalog.provider.get throws
-    // so the provider falls back to the official endpoint.
-    await searchOpenAI(ctx as never, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
-    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://api.openai.com/v1/responses")
+    // before the provider can select a safe request endpoint.
+    await expect(
+      searchOpenAI(ctx as never, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal),
+    ).rejects.toThrow(/Unable to read openai provider settings/)
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
   test("uses the codex endpoint with originator and account headers for OAuth credentials", async () => {
