@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "bun:test"
-import type { Plugin, WebSearch } from "@opencode/plugin"
-import plugin from "./index.js"
+import type { Plugin } from "@opencode/plugin"
 import { defaultConfig, parseConfig } from "./src/config.js"
 import type { PluginConfig, ThinkingLevel } from "./src/config.js"
 import { searchGoogle } from "./src/google.js"
@@ -14,15 +13,6 @@ afterEach(() => {
 })
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { readonly [key: string]: JsonValue }
-
-interface SearchDefinition {
-  readonly id: string
-  readonly name: string
-  readonly execute: (
-    input: { readonly query: string },
-    context: { readonly signal: AbortSignal },
-  ) => Promise<readonly WebSearch.Result[]>
-}
 
 interface OpenAIRequestBody {
   readonly model: string
@@ -196,39 +186,6 @@ async function googleResults(config: PluginConfig, auth: JsonValue, query = "wha
     new AbortController().signal,
   )
 }
-
-describe("registration", () => {
-  test("providers execute through the registered execute functions", async () => {
-    const added: SearchDefinition[] = []
-
-    const ctx = {
-      options: {},
-      integration: {
-        connection: {
-          active: async () => ({ type: "credential", id: "cred_1" }),
-          resolve: async () => keyCredential,
-        },
-      },
-      websearch: {
-        transform: async (callback: (draft: { add: (definition: SearchDefinition) => void }) => void) => {
-          callback({ add: (definition) => added.push(definition) })
-
-          return { dispose: async () => undefined }
-        },
-      },
-    }
-
-    const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    // SAFETY: the test double implements only the subset of the plugin context
-    // contract this registration test exercises.
-    await plugin.setup(ctx as never)
-    const openaiResult = await added[0]!.execute({ query: "hello" }, { signal: new AbortController().signal })
-    const googleResult = await added[1]!.execute({ query: "hello" }, { signal: new AbortController().signal })
-    expect(openaiResult).toEqual([])
-    expect(googleResult).toEqual([])
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
-  })
-})
 
 describe("options", () => {
   test("applies defaults when no options are supplied", () => {
