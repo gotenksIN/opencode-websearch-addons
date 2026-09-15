@@ -15,7 +15,7 @@ export async function searchOpenAI(
   query: string,
   contextSignal: AbortSignal,
 ): Promise<readonly WebSearch.Result[]> {
-  const credential = await resolveCredential(ctx, "openai")
+  contextSignal.throwIfAborted()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), timeoutMs)
   const onAbort = () => controller.abort(contextSignal.reason)
@@ -27,6 +27,9 @@ export async function searchOpenAI(
   }
 
   try {
+    const credential = await resolveCredential(ctx, "openai")
+    controller.signal.throwIfAborted()
+
     if (credential.type === "key") {
       const baseURL = await providerBaseURL(ctx, "openai")
 

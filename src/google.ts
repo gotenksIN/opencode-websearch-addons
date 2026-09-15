@@ -43,13 +43,7 @@ export async function searchGoogle(
   query: string,
   contextSignal: AbortSignal,
 ): Promise<readonly WebSearch.Result[]> {
-  const credential = await resolveCredential(ctx, "google")
-
-  if (credential.type !== "key") {
-    throw new Error("Unsupported Google credential type; expected a key credential")
-  }
-
-  const baseURL = await providerBaseURL(ctx, "google")
+  contextSignal.throwIfAborted()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), timeoutMs)
   const onAbort = () => controller.abort(contextSignal.reason)
@@ -61,6 +55,14 @@ export async function searchGoogle(
   }
 
   try {
+    const credential = await resolveCredential(ctx, "google")
+    controller.signal.throwIfAborted()
+
+    if (credential.type !== "key") {
+      throw new Error("Unsupported Google credential type; expected a key credential")
+    }
+
+    const baseURL = await providerBaseURL(ctx, "google")
     const endpoint = `${baseURL ?? apiBase}/models/${encodeURIComponent(config.model)}:streamGenerateContent?alt=sse`
 
     const response = await fetch(endpoint, {
