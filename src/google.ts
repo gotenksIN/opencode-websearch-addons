@@ -13,6 +13,29 @@ const thinkingLevelWire = {
   high: "HIGH",
 }
 
+const blockedFinishReasons = new Set([
+  "BLOCKED",
+  "SAFETY",
+  "IMAGE_SAFETY",
+  "RECITATION",
+  "BLOCKLIST",
+  "PROHIBITED_CONTENT",
+  "SPII",
+  "MODEL_ARMOR",
+  "IMAGE_PROHIBITED_CONTENT",
+  "IMAGE_RECITATION",
+  "LANGUAGE",
+])
+
+const errorFinishReasons = new Set([
+  "MALFORMED_FUNCTION_CALL",
+  "UNEXPECTED_TOOL_CALL",
+  "NO_IMAGE",
+  "TOO_MANY_TOOL_CALLS",
+  "MISSING_THOUGHT_SIGNATURE",
+  "MALFORMED_RESPONSE",
+])
+
 export async function searchGoogle(
   ctx: IntegrationContext,
   config: GoogleOptions,
@@ -82,17 +105,27 @@ export function timeRangeFilterFor(range: SearchTimeRange, now: Date = new Date(
 
   switch (range) {
     case "lastDay":
-      start.setDate(start.getDate() - 1)
+      start.setUTCDate(start.getUTCDate() - 1)
       break
     case "lastWeek":
-      start.setDate(start.getDate() - 7)
+      start.setUTCDate(start.getUTCDate() - 7)
       break
-    case "lastMonth":
-      start.setMonth(start.getMonth() - 1)
+    case "lastMonth": {
+      const day = start.getUTCDate()
+      start.setUTCDate(1)
+      start.setUTCMonth(start.getUTCMonth() - 1)
+      start.setUTCDate(Math.min(day, daysInUTCMonth(start)))
       break
-    case "lastYear":
-      start.setFullYear(start.getFullYear() - 1)
+    }
+
+    case "lastYear": {
+      const day = start.getUTCDate()
+      start.setUTCDate(1)
+      start.setUTCFullYear(start.getUTCFullYear() - 1)
+      start.setUTCDate(Math.min(day, daysInUTCMonth(start)))
       break
+    }
+
     default:
       throw new Error(`Invalid searchTimeRange ${range} for a time range filter`)
   }
@@ -103,6 +136,10 @@ export function timeRangeFilterFor(range: SearchTimeRange, now: Date = new Date(
   } satisfies { startTime: string; endTime: string }
 }
 
+function daysInUTCMonth(date: Date): number {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate()
+}
+
 function stripMilliseconds(date: Date): string {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z")
 }
@@ -111,6 +148,7 @@ interface MergedCandidate {
   readonly parts: string[]
   grounding?: Record<string, JsonValue>
   finishReason?: string
+  blockReason?: string
 }
 
 async function collectGenerateContent(response: Response, credentials: readonly string[]): Promise<MergedCandidate> {
@@ -123,9 +161,15 @@ async function collectGenerateContent(response: Response, credentials: readonly 
   }
 
   const merged: MergedCandidate = { parts: [] }
+  let terminal = false
 
   for await (const payload of parseSSE(response, "Gemini")) {
     mergeChunk(merged, payload, credentials)
+    terminal ||= merged.finishReason !== undefined || merged.blockReason !== undefined || (isRecord(payload) && isRecord(payload.usageMetadata))
+  }
+
+  if (!terminal) {
+    throw new Error("Invalid Gemini web search response: stream ended without a terminal event")
   }
 
   return merged
@@ -134,9 +178,17 @@ async function collectGenerateContent(response: Response, credentials: readonly 
 function mergeChunk(merged: MergedCandidate, payload: JsonValue, credentials: readonly string[]): MergedCandidate {
   if (!isRecord(payload)) return merged
 
-  if (isRecord(payload.error)) {
+  if (payload.error !== undefined) {
+    if (!isRecord(payload.error)) {
+      throw new Error("Invalid Gemini web search response: malformed stream error")
+    }
+
     const message = isJSONString(payload.error.message) ? payload.error.message : "unknown error"
     throw new Error(`Gemini web search failed: ${sanitizeProviderMessage(message, credentials)}`)
+  }
+
+  if (isRecord(payload.promptFeedback) && isJSONString(payload.promptFeedback.blockReason)) {
+    merged.blockReason = payload.promptFeedback.blockReason
   }
 
   if (!Array.isArray(payload.candidates) || payload.candidates.length === 0) return merged
@@ -147,7 +199,7 @@ function mergeChunk(merged: MergedCandidate, payload: JsonValue, credentials: re
 
   if (Array.isArray(content.parts)) {
     for (const part of content.parts) {
-      if (isRecord(part) && isJSONString(part.text)) {
+      if (isRecord(part) && part.thought !== true && isJSONString(part.text)) {
         merged.parts.push(part.text)
       }
     }
@@ -174,9 +226,18 @@ function mergeChunk(merged: MergedCandidate, payload: JsonValue, credentials: re
 
 export function normalizeGenerateContent(merged: MergedCandidate): readonly WebSearch.Result[] {
   const finishReason = merged.finishReason
+  const blockReason = merged.blockReason
 
-  if (finishReason === "BLOCKED" || finishReason === "SAFETY") {
+  if (blockReason) {
+    throw new Error(`Gemini web search blocked by the provider (prompt block reason ${blockReason})`)
+  }
+
+  if (finishReason && blockedFinishReasons.has(finishReason)) {
     throw new Error(`Gemini web search blocked by the provider (finish reason ${finishReason})`)
+  }
+
+  if (finishReason && errorFinishReasons.has(finishReason)) {
+    throw new Error(`Gemini web search failed (finish reason ${finishReason})`)
   }
 
   if (!merged.grounding) return []
@@ -219,7 +280,7 @@ export function normalizeGenerateContent(merged: MergedCandidate): readonly WebS
     for (const rawSupport of supports) {
       if (!isRecord(rawSupport)) continue
       const segment = isRecord(rawSupport.segment) ? rawSupport.segment : {}
-      const span = sliceSpan(text, segment.startIndex, segment.endIndex)
+      const span = sliceSpan(text, segment.startIndex ?? 0, segment.endIndex)
 
       if (!span) continue
 

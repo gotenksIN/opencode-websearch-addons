@@ -931,6 +931,17 @@ describe("gemini", () => {
     mockFetch((_url, _init) => sseResponse([JSON.stringify(blocked)]))
     await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/blocked by the provider/)
 
+    mockFetch((_url, _init) => sseResponse([JSON.stringify({ promptFeedback: { blockReason: "PROHIBITED_CONTENT" } })]))
+    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/prompt block reason PROHIBITED_CONTENT/)
+
+    mockFetch((_url, _init) =>
+      sseResponse([JSON.stringify({ candidates: [{ finishReason: "MALFORMED_RESPONSE" }] })]),
+    )
+    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/failed \(finish reason MALFORMED_RESPONSE\)/)
+
+    mockFetch((_url, _init) => sseResponse([JSON.stringify({ error: "invalid" })]))
+    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/malformed stream error/)
+
     mockFetch((_url, _init) => jsonResponse({ error: { message: "API key not valid" } }, 400))
     await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/Gemini web search failed \(HTTP 400\): API key not valid/)
 
