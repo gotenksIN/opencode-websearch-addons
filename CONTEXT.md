@@ -35,6 +35,7 @@ tools/oxlint/anti-slop/
 websearch.test.ts
 tests/live.test.ts
 README.md
+CHANGELOG.md
 AGENTS.md
 CONTEXT.md
 LICENSE
@@ -47,7 +48,7 @@ LICENSE
 ```json
 {
   "name": "opencode-websearch-addons",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "OpenCode V2 plugin that adds OpenAI and Gemini native web search providers to the built-in websearch tool.",
   "license": "MIT",
   "type": "module",
@@ -64,15 +65,16 @@ LICENSE
     "test:live": "LIVE=1 bun test",
     "typecheck": "tsc --noEmit",
     "check": "tsc --noEmit && bun test",
+    "prepack": "bun run build",
     "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.2"
+    "@opencode/plugin": "2.0.3"
   },
   "devDependencies": {
-    "@oxlint/plugins": "1.80.0",
+    "@oxlint/plugins": "1.83.0",
     "@types/bun": "latest",
-    "oxlint": "1.80.0",
+    "oxlint": "1.83.0",
     "typescript": "latest"
   },
   "engines": {
@@ -97,7 +99,7 @@ The package manifest and build must follow strict rules to maintain compatibilit
 #### Dependency declaration
 
 - Declare `@opencode/plugin` under `dependencies`.
-- Pin exact versions (such as `"2.0.2"`).
+- Pin exact versions (such as `"2.0.3"`).
 - Do not mark `@opencode/plugin` as an optional peer dependency. OpenCode V2's Bun runtime loads server plugins via standard dynamic import without synthetic module interception.
 
 #### Entrypoints and package contents
@@ -183,7 +185,7 @@ export default Plugin.define({
 ### Provider registration and provider selection
 
 OpenCode V2 loads plugins listed in the user configuration `plugins` array.
-The setup function receives `ctx` containing `ctx.options`, `ctx.integration`, and `ctx.websearch`.
+The setup function receives `ctx` containing `ctx.options`, `ctx.integration`, `ctx.websearch`, and provider metadata access.
 Draft methods inside `ctx.websearch.transform` add providers to OpenCode's provider registry.
 The setup function returns a disposal callback `() => registration.dispose()`.
 
@@ -304,7 +306,10 @@ Active connections can be stored credentials or environment variable references:
 
 `resolveCredential` resolves both connection types without branching on connection type.
 
-When no active connection exists, the resolver falls back to reading `data.settings.apiKey` from `ctx.catalog.provider.get({ providerID })`.
+When no active connection exists, the resolver falls back to reading `data.settings.apiKey` from the provider metadata API.
+The current V2 source exposes this API as `ctx.provider.get({ providerID })`.
+The published 2.0.3 package exposes it as `ctx.catalog.provider.get({ providerID })`.
+The plugin prefers `ctx.provider` and retains the 2.0.3 fallback until the published package catches up with the V2 source.
 A non-empty string `apiKey` produces a key credential.
 Any failure reading provider settings falls back to the standard connection error.
 
@@ -369,13 +374,13 @@ No `instructions` field is sent in the body on either path.
 ### Base URL override
 
 The key credential path honors a custom `baseURL` from OpenCode provider settings.
-At execution time the plugin reads `ctx.catalog.provider.get({ providerID: "openai" })` and uses `data.settings.baseURL` when it is a non-empty string.
+At execution time the plugin reads the OpenAI provider metadata and uses `data.settings.baseURL` when it is a non-empty string.
 The request endpoint becomes `<baseURL>/responses`.
 Trailing slashes are stripped.
 When no `baseURL` is configured, the request goes to the public endpoint `https://api.openai.com/v1/responses`.
 The OAuth path always uses the Codex endpoint `https://chatgpt.com/backend-api/codex/responses`.
 This mirrors the OpenCode built-in provider, which forces the Codex base URL for OAuth regardless of configured settings.
-Any failure reading provider settings falls back to the official endpoint.
+If the provider metadata API fails, the search fails before it sends the credential to an endpoint.
 
 ### Request body format
 
@@ -427,8 +432,9 @@ Each event payload arrives as `data: <json>`.
 
 1. Collect items from `response.output_item.done` events where `payload.type === "response.output_item.done"`.
 2. If no done events arrive, fallback to output items in `response.completed` event (`payload.response.output`).
-3. If `payload.type === "response.failed"`, throw an error with the provider message.
-4. If `content-type` does not include `text/event-stream`, parse the body directly as JSON and extract `body.output`.
+3. Stop consuming and cancel the response body after `response.completed` or `response.incomplete`.
+4. If `payload.type` is `response.failed` or `error`, throw an error with the provider code and message.
+5. If `content-type` does not include `text/event-stream`, reject error envelopes and require a `body.output` array.
 
 ### Normalization (`normalizeOutput`)
 
@@ -473,11 +479,11 @@ OAuth or non-key credentials throw `new Error("Unsupported Google credential typ
 ### Base URL override
 
 The endpoint honors a custom `baseURL` from OpenCode provider settings.
-At execution time the plugin reads `ctx.catalog.provider.get({ providerID: "google" })` and uses `data.settings.baseURL` when it is a non-empty string.
+At execution time the plugin reads the Google provider metadata and uses `data.settings.baseURL` when it is a non-empty string.
 The request endpoint becomes `<baseURL>/models/<model>:streamGenerateContent?alt=sse`.
 Trailing slashes are stripped.
 When no `baseURL` is configured, the request goes to the official endpoint.
-Any failure reading provider settings falls back to the official endpoint.
+If the provider metadata API fails, the search fails before it sends the credential to an endpoint.
 
 ### Request body format
 
@@ -513,7 +519,8 @@ Any failure reading provider settings falls back to the official endpoint.
 
 When `searchTimeRange` is `"any"`, `googleSearch` is `{}`.
 When `searchTimeRange` is `"lastDay"`, `"lastWeek"`, `"lastMonth"`, or `"lastYear"`, `timeRangeFilterFor` computes start and end timestamps.
-Start time subtracts 1 day, 7 days, 1 month, or 1 year from execution time.
+Start time subtracts 1 day, 7 days, 1 month, or 1 year from execution time using UTC calendar arithmetic.
+Month and year ranges clamp month-end and leap-day dates to the last valid day in the target month.
 Both ISO strings strip milliseconds using `.replace(/\.\d{3}Z$/, "Z")`.
 
 The `thinkingLevel` option maps to uppercase wire values:
@@ -529,18 +536,21 @@ Gemini stream chunks arrive as `data: <json>`.
 
 Chunk processing:
 
-- Concatenate text parts from `candidate.content.parts[].text`.
+- Concatenate visible text parts from `candidate.content.parts[].text` and exclude parts marked with `thought: true`.
 - Merge `candidate.groundingMetadata` records across chunks when they contain `groundingChunks` or `groundingSupports` arrays, so metadata split across chunks combines.
 - Record the latest `candidate.finishReason`.
 - Throw on stream payload containing `{ error: { message } }`.
+- Reject a stream that ends without a finish reason, prompt block, or usage payload.
 
 Normalization (`normalizeGenerateContent`):
 
-1. If `finishReason` is `"BLOCKED"` or `"SAFETY"`, throw `new Error("Gemini web search blocked by the provider (finish reason <finishReason>)")`.
+1. Reject provider blocks reported through `promptFeedback.blockReason` or a content-filter finish reason.
+   Reject finish reasons that report malformed provider output or tool calls.
 2. Extract web sources from `groundingMetadata.groundingChunks` where `chunk.web.uri` exists.
 3. Index sources by chunk array position.
 4. Extract grounding supports from `groundingMetadata.groundingSupports`.
 5. Slice segment text from concatenated candidate text using `[startIndex, endIndex]` bounds clamped to `[0, text.length]`.
+   Treat an omitted `startIndex` as the protobuf default value `0`.
 6. Map segment text to source URLs using `groundingChunkIndices`.
 7. Deduplicate text spans per URL using a `Set`.
 8. Deduplicate sources by exact URL string while preserving chunk order.
@@ -552,6 +562,7 @@ Normalization (`normalizeGenerateContent`):
 Every search function accepts `contextSignal: AbortSignal` from OpenCode and `timeoutMs: number`.
 
 ```ts
+contextSignal.throwIfAborted()
 const controller = new AbortController()
 const timer = setTimeout(
   () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
@@ -566,6 +577,8 @@ if (contextSignal.aborted) {
 }
 
 try {
+  // Resolve credentials and provider settings.
+  controller.signal.throwIfAborted()
   // Fetch call using controller.signal
 } finally {
   clearTimeout(timer)
@@ -590,7 +603,6 @@ Mock provider contexts simulate `ctx.integration.connection.active` and `ctx.int
 
 Test suite coverage:
 
-- Provider registration (registers `openai` and `google`, checks display names, verifies no custom tools).
 - Configuration parsing and defaults.
 - Configuration validation errors and precise error message formatting.
 - `timeRangeFilter` timestamp calculation and millisecond stripping.
@@ -649,8 +661,8 @@ Expected output:
 Step 2: Execute search requests via the OpenCode API:
 
 ```sh
-opencode2 api post /api/websearch '{"provider":"openai","query":"OpenCode CLI release"}'
-opencode2 api post /api/websearch '{"provider":"google","query":"OpenCode CLI release"}'
+opencode2 api post /api/websearch '{"providerID":"openai","query":"OpenCode CLI release"}'
+opencode2 api post /api/websearch '{"providerID":"google","query":"OpenCode CLI release"}'
 ```
 
 Verify that results return normalized `WebSearch.Result[]` arrays containing valid URLs and timestamps.
@@ -683,7 +695,7 @@ Wire formats and API contracts were verified against these primary source code r
   - Verified `web_search_call.action.sources` include field.
   - Verified `googleSearch` tool structure and `timeRangeFilter` timestamp formatting.
   - Verified `thinkingConfig.thinkingLevel` uppercase wire enum mapping.
-- OpenCode V2 repository (`packages/plugin/src/promise/{plugin,websearch,integration}.ts`, `packages/schema/src/{credential,websearch}.ts`, `packages/core/src/plugin/provider/openai.ts`, `packages/core/src/plugin/models-dev.ts`):
+- OpenCode V2 repository (`packages/plugin/src/promise/{plugin,provider,websearch,integration}.ts`, `packages/schema/src/{credential,websearch}.ts`, `packages/core/src/plugin/provider/openai.ts`, `packages/core/src/plugin/models-dev.ts`):
   - Verified `ctx.integration.connection.active` and `resolve` API.
   - Verified OAuth endpoint path rewrite `/backend-api/codex/responses`.
   - Verified `originator: opencode` and `chatgpt-account-id` headers.
