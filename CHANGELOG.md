@@ -2,6 +2,13 @@
 
 All notable changes to `opencode-websearch-addons` are documented in this file.
 
+## 1.0.8 (2026-09-23)
+
+- Update the OpenCode V2 plugin and Bun development dependencies.
+- Map Gemini grounding citations to the correct generated text across UTF-8 offsets, streamed chunks, and response parts.
+- Stop searches cancelled during credential or provider-settings lookup before sending a provider request.
+- Reject malformed Gemini response envelopes while preserving empty results for valid responses without grounded sources.
+
 ## 1.0.7 (2026-09-16)
 
 - Update all direct dependencies to their latest releases, including `@opencode/plugin` 2.0.3 and Oxlint 1.83.0.
