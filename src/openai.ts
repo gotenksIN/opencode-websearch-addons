@@ -27,11 +27,12 @@ export async function searchOpenAI(
   }
 
   try {
-    const credential = await resolveCredential(ctx, "openai")
+    const credential = await resolveCredential(ctx, "openai", controller.signal)
     controller.signal.throwIfAborted()
 
     if (credential.type === "key") {
-      const baseURL = await providerBaseURL(ctx, "openai")
+      const baseURL = await providerBaseURL(ctx, "openai", controller.signal)
+      controller.signal.throwIfAborted()
 
       return await runOpenAIRequest(
         baseURL ? `${baseURL}/responses` : publicEndpoint,

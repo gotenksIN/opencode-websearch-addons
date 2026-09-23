@@ -29,16 +29,36 @@ export function isJSONNumber(value: JsonValue | undefined): value is number {
   return Object.prototype.toString.call(value) === "[object Number]"
 }
 
+export async function awaitLookup<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted()
+
+  if (!signal) return operation()
+
+  let onAbort: (() => void) | undefined
+
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason)
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+
+  try {
+    return await Promise.race([operation(), aborted])
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort)
+  }
+}
+
 export async function providerBaseURL(
   ctx: ProviderSettingsContext,
   providerID: string,
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
   const lookup = ctx.provider ?? ctx.catalog?.provider
 
   if (!lookup) return undefined
 
   try {
-    const result = await lookup.get({ providerID })
+    const result = await awaitLookup(() => lookup.get({ providerID }), signal)
     const settings = result?.data?.settings
     const baseURL = settings !== undefined && isRecord(settings) ? settings["baseURL"] : undefined
 
@@ -47,6 +67,7 @@ export async function providerBaseURL(
 
     return trimmed.length > 0 ? trimmed : undefined
   } catch {
+    signal?.throwIfAborted()
     throw new Error(`Unable to read ${providerID} provider settings. Try again.`)
   }
 }

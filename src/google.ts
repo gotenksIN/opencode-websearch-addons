@@ -55,14 +55,15 @@ export async function searchGoogle(
   }
 
   try {
-    const credential = await resolveCredential(ctx, "google")
+    const credential = await resolveCredential(ctx, "google", controller.signal)
     controller.signal.throwIfAborted()
 
     if (credential.type !== "key") {
       throw new Error("Unsupported Google credential type; expected a key credential")
     }
 
-    const baseURL = await providerBaseURL(ctx, "google")
+    const baseURL = await providerBaseURL(ctx, "google", controller.signal)
+    controller.signal.throwIfAborted()
     const endpoint = `${baseURL ?? apiBase}/models/${encodeURIComponent(config.model)}:streamGenerateContent?alt=sse`
 
     const response = await fetch(endpoint, {
