@@ -148,7 +148,7 @@ function stripMilliseconds(date: Date): string {
 }
 
 interface MergedCandidate {
-  readonly parts: string[]
+  readonly parts: (string | undefined)[]
   grounding?: Record<string, JsonValue>
   finishReason?: string
   blockReason?: string
@@ -199,11 +199,22 @@ function validGenerateContentEnvelope(body: Record<string, JsonValue>): boolean 
 
       if (candidate.groundingMetadata !== undefined && !isRecord(candidate.groundingMetadata)) return false
 
+      if (isRecord(candidate.groundingMetadata)) {
+        const { groundingChunks, groundingSupports } = candidate.groundingMetadata
+
+        if (groundingChunks !== undefined && !Array.isArray(groundingChunks)) return false
+
+        if (groundingSupports !== undefined && !Array.isArray(groundingSupports)) return false
+      }
+
       if (candidate.content === undefined) return true
 
       return isRecord(candidate.content) &&
         (candidate.content.parts === undefined ||
-          (Array.isArray(candidate.content.parts) && candidate.content.parts.every(isRecord)))
+          (Array.isArray(candidate.content.parts) && candidate.content.parts.every((part) =>
+            isRecord(part) &&
+            (part.text === undefined || isJSONString(part.text)) &&
+            (part.thought === undefined || part.thought === true || part.thought === false))))
     })
   }
 
@@ -233,11 +244,11 @@ function mergeChunk(merged: MergedCandidate, payload: JsonValue, credentials: re
   const content = isRecord(candidate.content) ? candidate.content : {}
 
   if (Array.isArray(content.parts)) {
-    for (const part of content.parts) {
+    content.parts.forEach((part, index) => {
       if (isRecord(part) && part.thought !== true && isJSONString(part.text)) {
-        merged.parts.push(part.text)
+        merged.parts[index] = (merged.parts[index] ?? "") + part.text
       }
-    }
+    })
   }
 
   if (isRecord(candidate.groundingMetadata)) {
