@@ -247,7 +247,7 @@ describe("options", () => {
   })
 
   test("omits timeRangeFilter for searchTimeRange any and user_location when not configured", async () => {
-    const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
+    const fetchSpy = mockFetch((url) => jsonResponse(url.includes("generativelanguage.googleapis.com") ? { candidates: [] } : { output: [] }))
     await openaiResults(defaultConfig, keyCredential)
     await googleResults(defaultConfig, keyCredential)
     const openaiInit = fetchSpy.mock.calls[0]![1]!
@@ -266,7 +266,7 @@ describe("authentication", () => {
   test("resolves the active connection for every execution with the right integration IDs", async () => {
     const active = vi.fn(async () => ({ type: "credential", id: "cred_1" }))
     const resolve = vi.fn(async () => keyCredential)
-    mockFetch((_url, _init) => jsonResponse({ output: [] }))
+    mockFetch((url) => jsonResponse(url.includes("generativelanguage.googleapis.com") ? { candidates: [] } : { output: [] }))
     const ctx = connectionCtx(active, resolve)
     await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
     await searchGoogle(ctx, defaultConfig.google, defaultConfig.timeoutMs, "q", new AbortController().signal)

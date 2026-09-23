@@ -160,6 +160,12 @@ async function collectGenerateContent(response: Response, credentials: readonly 
   if (!contentType.includes("text/event-stream")) {
     const body = await readJSON(response)
 
+    if (!isRecord(body)) throw new Error("Invalid Gemini web search response: malformed response envelope")
+
+    if (body.error === undefined && !validGenerateContentEnvelope(body)) {
+      throw new Error("Invalid Gemini web search response: malformed response envelope")
+    }
+
     return mergeChunk({ parts: [] }, body, credentials)
   }
 
@@ -176,6 +182,32 @@ async function collectGenerateContent(response: Response, credentials: readonly 
   }
 
   return merged
+}
+
+function validGenerateContentEnvelope(body: Record<string, JsonValue>): boolean {
+  if (body.promptFeedback !== undefined && !isRecord(body.promptFeedback)) return false
+
+  if (body.usageMetadata !== undefined && !isRecord(body.usageMetadata)) return false
+
+  if (body.candidates !== undefined && !Array.isArray(body.candidates)) return false
+
+  if (Array.isArray(body.candidates)) {
+    return body.candidates.every((candidate) => {
+      if (!isRecord(candidate)) return false
+
+      if (candidate.finishReason !== undefined && !isJSONString(candidate.finishReason)) return false
+
+      if (candidate.groundingMetadata !== undefined && !isRecord(candidate.groundingMetadata)) return false
+
+      if (candidate.content === undefined) return true
+
+      return isRecord(candidate.content) &&
+        (candidate.content.parts === undefined ||
+          (Array.isArray(candidate.content.parts) && candidate.content.parts.every(isRecord)))
+    })
+  }
+
+  return isRecord(body.promptFeedback) || isRecord(body.usageMetadata)
 }
 
 function mergeChunk(merged: MergedCandidate, payload: JsonValue, credentials: readonly string[]): MergedCandidate {
