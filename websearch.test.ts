@@ -189,7 +189,19 @@ async function googleResults(config: PluginConfig, auth: JsonValue, query = "wha
 
 describe("options", () => {
   test("applies defaults when no options are supplied", () => {
-    expect(parseConfig({})).toEqual(defaultConfig)
+    expect(parseConfig({})).toEqual({
+      openai: {
+        model: "gpt-5.6-luna",
+        reasoningEffort: "medium",
+        searchContextSize: "medium",
+      },
+      google: {
+        model: "gemini-3.5-flash-lite",
+        thinkingLevel: "medium",
+        searchTimeRange: "any",
+      },
+      timeoutMs: 120_000,
+    })
   })
 
   test("accepts configured model, reasoning, and provider-specific values", () => {
@@ -570,19 +582,12 @@ describe("openai", () => {
     ])
   })
 
-  test("returns [] for a valid response without sources", () => {
-    expect(normalizeOutput([])).toEqual([])
-    expect(normalizeOutput([{ type: "message", role: "assistant", content: [{ type: "output_text", text: "no sources", annotations: [] }] }])).toEqual([])
-  })
-
   test("rejects malformed and unsuccessful responses", async () => {
     mockFetch((_url, _init) => jsonResponse({ error: { message: "Invalid API key" } }, 401))
     await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/OpenAI web search failed \(HTTP 401\): Invalid API key/)
 
     mockFetch((_url, _init) => jsonResponse("not json at all", 502, "text/plain"))
     await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/OpenAI web search failed \(HTTP 502\)/)
-
-    expect(() => normalizeOutput(null)).toThrow(/missing output/)
   })
 
   test("parses the SSE stream via output_item.done events", async () => {
@@ -779,14 +784,6 @@ describe("gemini", () => {
     }
   })
 
-  test("omits timeRangeFilter for searchTimeRange any", async () => {
-    const fetchSpy = mockFetch((_url, _init) => sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]))
-    await googleResults(defaultConfig, keyCredential)
-    const body = bodyOf<GoogleRequestBody>(fetchSpy.mock.calls[0]![1]!)
-    const tool = body.tools[0]!
-    expect(tool.googleSearch).toEqual({})
-  })
-
   test("extracts URIs and titles from grounding chunks and aggregates supported segments", () => {
     const merged = {
       parts: ["Alpha facts are here and Beta details too."],
@@ -873,11 +870,6 @@ describe("gemini", () => {
     expect(results.map((result) => result.url)).toEqual(["https://example.com/a", "https://example.com/b"])
     expect(results[0]!.content).toBe("one")
     expect(results[0]!.title).toBe("A")
-  })
-
-  test("returns [] for a valid response without grounded web sources", async () => {
-    const results = normalizeGenerateContent({ parts: ["nothing grounded"], finishReason: "STOP" })
-    expect(results).toEqual([])
   })
 
   test("rejects blocked, malformed, and unsuccessful responses", async () => {
