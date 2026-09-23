@@ -1,7 +1,7 @@
 import { resolveCredential } from "./auth.js"
 import type { IntegrationContext } from "./auth.js"
 import type { GoogleOptions, SearchTimeRange } from "./config.js"
-import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
+import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, toResult } from "./types.js"
 import type { InternalSource, JsonValue, WebSearch } from "./types.js"
 
 const apiBase = "https://generativelanguage.googleapis.com/v1beta"
@@ -246,7 +246,6 @@ export function normalizeGenerateContent(merged: MergedCandidate): readonly WebS
   const chunks = merged.grounding.groundingChunks
 
   if (!Array.isArray(chunks)) return []
-  const text = merged.parts.join("")
   const sourcesByURL = new Map<string, ChunkSource>()
   const chunkIndexToSource = new Map<number, ChunkSource>()
   const order: string[] = []
@@ -282,7 +281,13 @@ export function normalizeGenerateContent(merged: MergedCandidate): readonly WebS
     for (const rawSupport of supports) {
       if (!isRecord(rawSupport)) continue
       const segment = isRecord(rawSupport.segment) ? rawSupport.segment : {}
-      const span = sliceSpan(text, segment.startIndex ?? 0, segment.endIndex)
+      const partIndex = segment.partIndex ?? 0
+
+      if (!isJSONNumber(partIndex) || !Number.isSafeInteger(partIndex) || partIndex < 0) continue
+      const part = merged.parts[partIndex]
+
+      if (part === undefined) continue
+      const span = segmentSpan(part, segment)
 
       if (!span) continue
 
@@ -313,6 +318,26 @@ export function normalizeGenerateContent(merged: MergedCandidate): readonly WebS
 
     return [toResult(result)]
   })
+}
+
+function segmentSpan(part: string, segment: Record<string, JsonValue>): string {
+  const supplied = isJSONString(segment.text) && part.includes(segment.text) ? segment.text : ""
+  const start = segment.startIndex ?? 0
+  const end = segment.endIndex
+
+  if (!isJSONNumber(start) || !isJSONNumber(end) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start) {
+    return supplied
+  }
+
+  const bytes = new TextEncoder().encode(part)
+
+  if (end > bytes.length) return supplied
+
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice(start, end))
+  } catch {
+    return supplied
+  }
 }
 
 interface ChunkSource extends InternalSource {
