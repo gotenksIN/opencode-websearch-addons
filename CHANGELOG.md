@@ -2,6 +2,10 @@
 
 All notable changes to `opencode-websearch-addons` are documented in this file.
 
+## 1.0.9 (2026-10-02)
+
+- Update `@opencode/plugin` to `2.0.21`, Oxlint dependencies to `1.86.0`, and TypeScript to `7.0.2`.
+
 ## 1.0.8 (2026-09-23)
 
 - Update the OpenCode V2 plugin and Bun development dependencies.
