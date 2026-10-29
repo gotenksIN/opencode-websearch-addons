@@ -92,7 +92,7 @@ Configure plugin options in your OpenCode configuration file under `plugins`.
       "options": {
         "timeoutMs": 120000,
         "openai": {
-          "model": "gpt-5.6-luna",
+          "model": "gpt-6-luna",
           "reasoningEffort": "medium",
           "searchContextSize": "medium"
         },
@@ -111,7 +111,7 @@ Configure plugin options in your OpenCode configuration file under `plugins`.
 
 | Option | Type | Default | Validation rules |
 | --- | --- | --- | --- |
-| `openai.model` | string | `"gpt-5.6-luna"` | Non-empty string up to 100 characters |
+| `openai.model` | string | `"gpt-6-luna"` | Non-empty string up to 100 characters |
 | `openai.reasoningEffort` | string | `"medium"` | `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"` |
 | `openai.searchContextSize` | string | `"medium"` | `"low"`, `"medium"`, or `"high"` |
 | `openai.userLocation` | object | `undefined` | Optional object with string fields `city`, `country`, `region`, or `timezone` |

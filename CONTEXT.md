@@ -329,7 +329,7 @@ Options are parsed and validated at plugin setup using `parseConfig`.
 | Option name | Type | Default value | Validation rule | Error message format |
 | --- | --- | --- | --- | --- |
 | `openai` | object | `{}` | Must be a plain record if defined | `Invalid plugin option openai; expected an object.` |
-| `openai.model` | string | `"gpt-5.6-luna"` | Non-empty string up to 100 characters | `Invalid plugin option openai.model; expected a non-empty string of at most 100 characters.` |
+| `openai.model` | string | `"gpt-6-luna"` | Non-empty string up to 100 characters | `Invalid plugin option openai.model; expected a non-empty string of at most 100 characters.` |
 | `openai.reasoningEffort` | string | `"medium"` | One of `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` | `Invalid plugin option openai.reasoningEffort; expected one of "none", "minimal", "low", "medium", "high", "xhigh", or "max".` |
 | `openai.searchContextSize` | string | `"medium"` | One of `"low"`, `"medium"`, `"high"` | `Invalid plugin option openai.searchContextSize; expected one of "low", "medium", or "high".` |
 | `openai.userLocation` | object | `undefined` | Optional object with optional string keys `city`, `country`, `region`, `timezone` | `Invalid plugin option openai.userLocation; expected an object with optional string fields city, country, region, or timezone.` |

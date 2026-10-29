@@ -191,7 +191,7 @@ describe("options", () => {
   test("applies defaults when no options are supplied", () => {
     expect(parseConfig({})).toEqual({
       openai: {
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         reasoningEffort: "medium",
         searchContextSize: "medium",
       },

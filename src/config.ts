@@ -47,7 +47,7 @@ export interface PluginConfig {
 
 export const defaultConfig: PluginConfig = {
   openai: {
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     reasoningEffort: "medium",
     searchContextSize: "medium",
   },
