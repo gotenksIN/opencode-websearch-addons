@@ -2,6 +2,14 @@
 
 All notable changes to `opencode-websearch-addons` are documented in this file.
 
+## 1.0.10 (2026-10-29)
+
+- Update `@opencode/plugin` to `2.2.1`, Oxlint dependencies to `1.90.0`, and `@types/bun` to `1.4.4`.
+- Change the default OpenAI search model to `gpt-6-luna`.
+- Reject HTTP redirects on authenticated provider requests so credential headers do not reach another origin.
+- Parse complete Server-Sent Events, including events that span several `data:` lines and streams that use CRLF or CR line endings.
+- Install the latest release in README examples instead of pinning `1.0.6`.
+
 ## 1.0.9 (2026-10-02)
 
 - Update `@opencode/plugin` to `2.0.21`, Oxlint dependencies to `1.86.0`, and TypeScript to `7.0.2`.
