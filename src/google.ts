@@ -73,6 +73,7 @@ export async function searchGoogle(
         "x-goog-api-key": credential.key,
       },
       body: JSON.stringify(buildGenerateContentBody(config, query)),
+      redirect: "error",
       signal: controller.signal,
     })
 

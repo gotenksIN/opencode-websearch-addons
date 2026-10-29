@@ -318,6 +318,7 @@ Any failure reading provider settings falls back to the standard connection erro
 - Never log credential values or tokens.
 - Never include credentials or secret tokens in error messages or exception details.
 - Never store credentials in local plugin state across requests.
+- Reject HTTP redirects on authenticated provider requests (`redirect: "error"`) so credential headers never reach another origin.
 
 ## Configuration engine (`src/config.ts`)
 

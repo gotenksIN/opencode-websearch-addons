@@ -93,6 +93,7 @@ async function runOpenAIRequest(
     method: "POST",
     headers,
     body: JSON.stringify(buildResponsesBody(config, query)),
+    redirect: "error",
     signal,
   })
 
