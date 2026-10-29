@@ -65,7 +65,7 @@ function mockFetch(handler: (url: string, init: RequestInit) => Response | Promi
 }
 
 function sseResponse(events: readonly string[]): Response {
-  const body = events.map((event) => `data: ${event}\n`).join("")
+  const body = events.map((event) => `data: ${event}\n\n`).join("")
 
   return new Response(body, { headers: { "Content-Type": "text/event-stream" } })
 }

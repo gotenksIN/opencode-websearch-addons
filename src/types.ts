@@ -165,42 +165,75 @@ export async function* parseSSE(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
+  let data: string[] = []
   let complete = false
+
+  // A CR at the end of the buffer may be the first half of a CRLF split across chunks.
+  const nextLine = (final: boolean): string | undefined => {
+    const match = /\r\n|\r|\n/.exec(buffer)
+
+    if (!match || (!final && match[0] === "\r" && match.index === buffer.length - 1)) return undefined
+    const line = buffer.slice(0, match.index)
+    buffer = buffer.slice(match.index + match[0].length)
+
+    return line
+  }
+
+  const addField = (line: string): void => {
+    if (line.startsWith(":")) return
+    const colon = line.indexOf(":")
+
+    if ((colon === -1 ? line : line.slice(0, colon)) !== "data") return
+    const value = colon === -1 ? "" : line.slice(colon + 1)
+    data.push(value.startsWith(" ") ? value.slice(1) : value)
+  }
+
+  const takeEvent = (): string | undefined => {
+    const payload = data.join("\n").trim()
+    data = []
+
+    if (payload.length === 0 || (skipDone && payload === "[DONE]")) return undefined
+
+    return payload
+  }
+
+  function* completeEvents(final: boolean): Generator<string> {
+    let line: string | undefined
+
+    while ((line = nextLine(final)) !== undefined) {
+      if (line.length > 0) {
+        addField(line)
+        continue
+      }
+
+      const payload = takeEvent()
+
+      if (payload !== undefined) yield payload
+    }
+  }
 
   try {
     for (;;) {
       const { done, value } = await reader.read()
 
       if (done) {
+        buffer += decoder.decode()
         complete = true
         break
       }
 
       buffer += decoder.decode(value, { stream: true })
-      let newline: number
 
-      while ((newline = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, newline)
-        buffer = buffer.slice(newline + 1)
-        const trimmed = line.trimEnd()
-
-        if (!trimmed.startsWith("data:")) continue
-        const payload = trimmed.slice(5).trim()
-
-        if (payload.length === 0 || (skipDone && payload === "[DONE]")) continue
-        yield parseSSEEvent(payload, provider)
-      }
+      for (const payload of completeEvents(false)) yield parseSSEEvent(payload, provider)
     }
 
-    const remainder = buffer.trim()
+    for (const payload of completeEvents(true)) yield parseSSEEvent(payload, provider)
 
-    if (remainder.length > 0 && remainder.startsWith("data:")) {
-      const payload = remainder.slice(5).trim()
+    // Accept a final event without its trailing blank line, as earlier releases did.
+    if (buffer.length > 0) addField(buffer)
+    const payload = takeEvent()
 
-      if (payload.length > 0 && !(skipDone && payload === "[DONE]")) {
-        yield parseSSEEvent(payload, provider)
-      }
-    }
+    if (payload !== undefined) yield parseSSEEvent(payload, provider)
   } finally {
     if (!complete) {
       try {

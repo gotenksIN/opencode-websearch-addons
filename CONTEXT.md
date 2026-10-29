@@ -430,6 +430,8 @@ The `user_location` property is omitted unless `openai.userLocation` is explicit
 
 OpenAI responses return a Server-Sent Events (SSE) stream.
 Each event payload arrives as `data: <json>`.
+The shared `parseSSE` parser joins consecutive `data:` lines with newlines and parses the event at the blank line that ends it.
+It accepts LF, CRLF, and CR line endings and ignores comment lines and other fields.
 
 1. Collect items from `response.output_item.done` events where `payload.type === "response.output_item.done"`.
 2. If no done events arrive, fallback to output items in `response.completed` event (`payload.response.output`).
@@ -533,7 +535,7 @@ The `thinkingLevel` option maps to uppercase wire values:
 
 ### Stream processing and grounding normalization
 
-Gemini stream chunks arrive as `data: <json>`.
+Gemini stream chunks arrive as `data: <json>` and use the same `parseSSE` parser.
 
 Chunk processing:
 
