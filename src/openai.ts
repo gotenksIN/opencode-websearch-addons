@@ -45,6 +45,17 @@ export async function searchOpenAI(
     }
 
     if (credential.type === "oauth") {
+      if (isTokenSharingCredential(credential)) {
+        return await runOpenAIRequest(
+          publicEndpoint,
+          { authorization: `Bearer ${credential.access}` },
+          config,
+          query,
+          controller.signal,
+          [credential.access, credential.refresh],
+        )
+      }
+
       const account = accountID(credential)
 
       const auth = {
@@ -120,6 +131,7 @@ function buildResponsesBody(config: OpenAIOptions, query: string) {
   body.model = config.model
   body.input = [{ role: "user", content: [{ type: "input_text", text: query }] }]
   body.tools = [tool]
+  body.tool_choice = { type: "web_search" }
   body.reasoning = { effort: config.reasoningEffort }
   body.include = ["web_search_call.action.sources"]
   body.store = false
@@ -131,7 +143,8 @@ function buildResponsesBody(config: OpenAIOptions, query: string) {
 async function collectOutputItems(response: Response, credentials: readonly string[]): Promise<JsonValue[]> {
   const contentType = response.headers.get("content-type") ?? ""
 
-  if (!contentType.includes("text/event-stream")) {
+  // Streaming requests on the token-sharing route can omit Content-Type.
+  if (contentType.length > 0 && !contentType.includes("text/event-stream")) {
     const body = await readJSON(response)
 
     if (!isRecord(body)) throw new Error("Invalid OpenAI web search response: body is not an object")
@@ -319,6 +332,16 @@ function addSource(
     source.seenSpans.add(span)
     source.spans.push(span)
   }
+}
+
+function isTokenSharingCredential(credential: Credential.OAuth): boolean {
+  if (credential.methodID === "chatgpt-token-sharing") return true
+
+  const metadata = credential.metadata
+
+  return isRecord(metadata)
+    && Array.isArray(metadata.scopes)
+    && metadata.scopes.includes("chatgpt.tokens.use.direct")
 }
 
 function accountID(credential: Credential.OAuth): string | undefined {

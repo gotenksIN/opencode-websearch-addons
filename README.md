@@ -69,9 +69,16 @@ When no active connection exists, it falls back to the `apiKey` field in the pro
 ### OpenAI authentication
 
 OpenAI supports API key credentials and ChatGPT OAuth credentials.
-Key credentials send requests to `https://api.openai.com/v1/responses`.
-OAuth credentials send requests to `https://chatgpt.com/backend-api/codex/responses`.
-OAuth requests include the `originator: opencode` header and the `chatgpt-account-id` header when an account ID exists.
+
+- API keys send requests to `https://api.openai.com/v1/responses`, or the configured provider `baseURL`.
+- **Sign in with ChatGPT** (`chatgpt-token-sharing`) sends requests to `https://api.openai.com/v1/responses` using the active subscription OAuth token. Grants whose saved scopes contain `chatgpt.tokens.use.direct` use the same route. These requests do not send Codex-specific headers or interpret the token's opaque account metadata.
+- **Codex browser (legacy)** and **Codex device code (legacy)** continue to use `https://chatgpt.com/backend-api/codex/responses`. These requests include `originator: opencode` and `chatgpt-account-id` when an account ID exists.
+
+OAuth credentials are sent only to the fixed OpenAI endpoint for their authorization method, not to a configured gateway. OpenCode owns token refresh; the plugin resolves the active connection on every search and never falls back to a different credential after an authorization error.
+
+Requests explicitly select the hosted `web_search` tool and use `store: false` with streaming enabled. Search availability still depends on the selected model and the account/workspace policy. Select this provider with `"websearch": { "provider": "openai" }`; installing the plugin does not change the selected provider automatically.
+
+The token-sharing route can omit the response `Content-Type`; the plugin treats such responses as SSE because it requested streaming.
 
 ### Google authentication
 
@@ -193,6 +200,11 @@ Run live integration smoke tests against real provider APIs:
 ```sh
 LIVE=1 OPENAI_API_KEY=... GEMINI_API_KEY=... bun test:live
 ```
+
+For a ChatGPT Token Sharing OAuth smoke test, set `CHATGPT_ACCESS_TOKEN` and
+`CHATGPT_OAUTH_METHOD=chatgpt-token-sharing`, then run `LIVE=1 bun test tests/live.test.ts`.
+Legacy OAuth smoke tests keep the default `chatgpt-browser` method and can also use `CHATGPT_ACCOUNT_ID`.
+These environment variables are only for opt-in development tests; normal plugin execution uses OpenCode's active connection.
 
 Build the ESM distribution bundle to `dist/`:
 

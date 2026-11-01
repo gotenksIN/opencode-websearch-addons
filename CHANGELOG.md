@@ -2,6 +2,14 @@
 
 All notable changes to `opencode-websearch-addons` are documented in this file.
 
+## Unreleased
+
+- Route ChatGPT Token Sharing OAuth to the public Responses API while retaining the legacy Codex endpoint for Codex OAuth.
+- Recognize token-sharing grants by their OpenCode method ID or saved `chatgpt.tokens.use.direct` scope without decoding access tokens or sending Codex account headers.
+- Parse token-sharing SSE responses that omit `Content-Type` and stop reading at the terminal event.
+- Explicitly select the hosted web search tool for search requests.
+- Allow the opt-in OAuth smoke test to select its sign-in method with `CHATGPT_OAUTH_METHOD`.
+
 ## 1.0.10 (2026-10-29)
 
 - Update `@opencode/plugin` to `2.2.1`, Oxlint dependencies to `1.90.0`, and `@types/bun` to `1.4.4`.

@@ -437,7 +437,7 @@ It accepts LF, CRLF, and CR line endings and ignores comment lines and other fie
 2. If no done events arrive, fallback to output items in `response.completed` event (`payload.response.output`).
 3. Stop consuming and cancel the response body after `response.completed` or `response.incomplete`.
 4. If `payload.type` is `response.failed` or `error`, throw an error with the provider code and message.
-5. If `content-type` does not include `text/event-stream`, reject error envelopes and require a `body.output` array.
+5. Treat an absent `content-type` as SSE (streaming was requested). For an explicit non-SSE content type, reject error envelopes and require a `body.output` array.
 
 ### Normalization (`normalizeOutput`)
 

@@ -11,6 +11,8 @@ const chatGPTAccess = process.env.CHATGPT_ACCESS_TOKEN
 
 const chatGPTAccountID = process.env.CHATGPT_ACCOUNT_ID
 
+const chatGPTMethod = process.env.CHATGPT_OAUTH_METHOD ?? "chatgpt-browser"
+
 const googleKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY
 
 interface OAuthCredential {
@@ -56,7 +58,7 @@ describe("live smoke tests", () => {
   test.skipIf(!live || !chatGPTAccess)("OpenAI ChatGPT OAuth path returns normalized results", async () => {
     const credential: OAuthCredential = {
       type: "oauth",
-      methodID: "chatgpt-browser",
+      methodID: chatGPTMethod,
       refresh: "live-refresh",
       access: chatGPTAccess,
       expires: 4_000_000_000,

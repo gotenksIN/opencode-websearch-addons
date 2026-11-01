@@ -17,6 +17,7 @@ type JsonValue = string | number | boolean | null | JsonValue[] | { readonly [ke
 interface OpenAIRequestBody {
   readonly model: string
   readonly tools: readonly OpenAISearchTool[]
+  readonly tool_choice: { readonly type: string }
   readonly reasoning: { readonly effort: string }
   readonly include: readonly string[]
   readonly store: boolean
@@ -151,6 +152,12 @@ const oauthCredential = {
   expires: 4_000_000_000,
   metadata: { accountID: "acc-1001" },
 } as const
+
+const tokenSharingCredential = {
+  ...oauthCredential,
+  methodID: "chatgpt-token-sharing",
+  metadata: { clientID: "test-client", scopes: ["chatgpt.tokens.use.direct", "offline_access"] },
+} satisfies JsonValue
 
 const fullConfig: PluginConfig = {
   openai: {
@@ -393,10 +400,13 @@ describe("authentication", () => {
     await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
     current = oauthCredential
     await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
+    current = tokenSharingCredential
+    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
     const urls = fetchSpy.mock.calls.map((call) => String(call[0]))
     expect(urls).toEqual([
       "https://api.openai.com/v1/responses",
       "https://chatgpt.com/backend-api/codex/responses",
+      "https://api.openai.com/v1/responses",
     ])
   })
 })
@@ -412,6 +422,7 @@ describe("openai", () => {
     expect(body.store).toBe(false)
     expect(body.stream).toBe(true)
     expect(body.include).toContain("web_search_call.action.sources")
+    expect(body.tool_choice).toEqual({ type: "web_search" })
     const tool = body.tools[0]!
     expect(tool.type).toBe("web_search")
     expect(tool.search_context_size).toBe("high")
@@ -483,9 +494,9 @@ describe("openai", () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  test("uses the codex endpoint with originator and account headers for OAuth credentials", async () => {
+  test.each(["chatgpt-browser", "chatgpt-headless"])("uses the codex endpoint with Codex headers for %s", async (methodID) => {
     const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    await openaiResults(defaultConfig, oauthCredential)
+    await openaiResults(defaultConfig, { ...oauthCredential, methodID })
     const [url, init] = fetchSpy.mock.calls[0]!
     expect(String(url)).toBe("https://chatgpt.com/backend-api/codex/responses")
     const headers = headersOf(init!)
@@ -494,6 +505,112 @@ describe("openai", () => {
     expect(headers["chatgpt-account-id"]).toBe("acc-1001")
     const body = bodyOf<OpenAIRequestBody>(init!)
     expect(body.instructions).toBeUndefined()
+  })
+
+  test("routes token-sharing OAuth to the public endpoint without Codex headers", async () => {
+    const auth = { ...tokenSharingCredential, metadata: { accountID: "not-a-codex-account" } }
+
+    const fetchSpy = mockFetch(() => sseResponse([
+      JSON.stringify({
+        type: "response.completed",
+        response: {
+          output: [{
+            type: "message",
+            content: [{
+              type: "output_text",
+              text: "OpenAI release notes",
+              annotations: [{
+                type: "url_citation",
+                start_index: 0,
+                end_index: 20,
+                url: "https://help.openai.com/en/articles/6825453-chatgpt-release-notes",
+                title: "ChatGPT release notes",
+              }],
+            }],
+          }],
+        },
+      }),
+    ]))
+
+    const results = await openaiResults(fullConfig, auth, "Find the official release notes")
+    const [url, init] = fetchSpy.mock.calls[0]!
+    expect(String(url)).toBe("https://api.openai.com/v1/responses")
+    expect(init!.redirect).toBe("error")
+    const headers = headersOf(init!)
+    expect(headers.Authorization).toBe(`Bearer ${auth.access}`)
+    expect(headers.originator).toBeUndefined()
+    expect(headers["chatgpt-account-id"]).toBeUndefined()
+    const body = bodyOf<OpenAIRequestBody>(init!)
+    expect(body.model).toBe(fullConfig.openai.model)
+    expect(body.store).toBe(false)
+    expect(body.stream).toBe(true)
+    expect(body.tool_choice).toEqual({ type: "web_search" })
+    expect(body.tools[0]!.external_web_access).toBe(true)
+    expect(results).toEqual([{
+      url: "https://help.openai.com/en/articles/6825453-chatgpt-release-notes",
+      title: "ChatGPT release notes",
+      content: "OpenAI release notes",
+      time: {},
+    }])
+  })
+
+  test("recognizes token-sharing grants by their scope without decoding the access token", async () => {
+    const auth = { ...tokenSharingCredential, methodID: "chatgpt-browser", access: "opaque-token" }
+    const fetchSpy = mockFetch(() => jsonResponse({ output: [] }))
+    await openaiResults(defaultConfig, auth)
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://api.openai.com/v1/responses")
+  })
+
+  test("parses headerless token-sharing SSE and stops at the completed event", async () => {
+    let cancelled = false
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const event = {
+          type: "response.completed",
+          response: {
+            output: [{
+              type: "web_search_call",
+              action: { sources: [{ type: "url", url: "https://openai.com", title: "OpenAI" }] },
+            }],
+          },
+        }
+
+        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+
+    mockFetch(() => new Response(stream))
+    const results = await openaiResults(defaultConfig, tokenSharingCredential)
+    expect(results).toEqual([{ url: "https://openai.com", title: "OpenAI", time: {} }])
+    expect(cancelled).toBe(true)
+  })
+
+  test("does not redirect token-sharing OAuth to a configured gateway", async () => {
+    const fetchSpy = mockFetch(() => jsonResponse({ output: [] }))
+    await searchOpenAI(
+      providerCtx({ connection: {}, credential: tokenSharingCredential }, { baseURL: "https://example.com/openai/v1" }),
+      defaultConfig.openai,
+      defaultConfig.timeoutMs,
+      "q",
+      new AbortController().signal,
+    )
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://api.openai.com/v1/responses")
+  })
+
+  test("redacts token-sharing credentials and does not fall back after an authorization failure", async () => {
+    const fetchSpy = mockFetch(() => jsonResponse({
+      error: { message: `rejected ${tokenSharingCredential.access} ${tokenSharingCredential.refresh}` },
+    }, 401))
+
+    await expect(openaiResults(defaultConfig, tokenSharingCredential)).rejects.toThrow(
+      "OpenAI web search failed (HTTP 401): rejected [REDACTED] [REDACTED]",
+    )
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://api.openai.com/v1/responses")
   })
 
   test("reads chatgpt-account-id from both accountID and accountId metadata keys", async () => {
