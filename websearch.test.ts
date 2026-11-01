@@ -559,6 +559,78 @@ describe("openai", () => {
     ])
   })
 
+  test.each([false, true])("preserves useful text around citation markers through JSON/SSE (stream=%s)", async (stream) => {
+    const first = "Register a provider with `ctx.websearch.transform` and `editor.add`."
+    const second = "Set `websearch.provider` in opencode.jsonc to select it."
+    const markerA = "([OpenCode](https://example.com/a))"
+    const markerB = "([Selection](https://example.com/b))"
+    const text = `${first} ${markerA} ${markerB}\n\nUncited commentary.\n\n${second} ${markerB}`
+
+    const annotations = [
+      { type: "url_citation", url: "https://example.com/a", start_index: text.indexOf(markerA), end_index: text.indexOf(markerA) + markerA.length },
+      ...[text.indexOf(markerB), text.lastIndexOf(markerB)].map((start) => ({
+        type: "url_citation", url: "https://example.com/b", start_index: start, end_index: start + markerB.length,
+      })),
+    ]
+
+    const output: JsonValue[] = [
+      { type: "message", content: [{ type: "output_text", text, annotations }] },
+      { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/uncited" }] } },
+    ]
+
+    mockFetch(() => stream
+      ? sseResponse([JSON.stringify({ type: "response.completed", response: { output } })])
+      : jsonResponse({ output }))
+    const results = await openaiResults(defaultConfig, keyCredential)
+    expect(results).toEqual([
+      { url: "https://example.com/a", content: first, time: {} },
+      { url: "https://example.com/b", content: `${first} ${second}`, time: {} },
+      { url: "https://example.com/uncited", time: {} },
+    ])
+  })
+
+  test.each([false, true])("handles Unicode before citation markers (code point offsets=%s)", async (codePoints) => {
+    const claim = "🔎 Настройте `websearch.provider`: поиск работает."
+    const marker = "([Документация](https://example.com/docs))"
+    const text = `${claim} ${marker}`
+    const start = codePoints ? Array.from(`${claim} `).length : claim.length + 1
+
+    const output = [{ type: "message", content: [{ type: "output_text", text, annotations: [
+      { type: "url_citation", url: "https://example.com/docs", start_index: start, end_index: start + marker.length },
+    ] }] }]
+
+    mockFetch(() => jsonResponse({ output }))
+    expect(await openaiResults(defaultConfig, keyCredential)).toEqual([
+      { url: "https://example.com/docs", content: claim, time: {} },
+    ])
+  })
+
+  test("keeps separately cited claims separate and deduplicates repeated citations", async () => {
+    const text = "Alpha is fast. [1] Beta is detailed. [2]\r\n\r\n- Gamma supports:\r\n  streaming and cancellation. citeturn0search0"
+    const markers = ["[1]", "[2]", "citeturn0search0", "[1]"]
+
+    const annotations = markers.map((marker, index) => ({
+      type: "url_citation", url: `https://example.com/${index === 3 ? 0 : index}`,
+      start_index: text.indexOf(marker), end_index: text.indexOf(marker) + marker.length,
+    }))
+
+    mockFetch(() => jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text, annotations }] }] }))
+    const results = await openaiResults(defaultConfig, keyCredential)
+    expect(results.map((result) => result.content)).toEqual([
+      "Alpha is fast.", "Beta is detailed.", "- Gamma supports:\r\n  streaming and cancellation.",
+    ])
+  })
+
+  test("does not invent content for isolated markers or uncited answers", async () => {
+    const text = "Uncited claim.\n\n[1]"
+    const annotations = [{ type: "url_citation", url: "https://example.com/a", start_index: text.indexOf("[1]"), end_index: text.length }]
+
+    mockFetch(() => jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text, annotations }] }] }))
+    expect(await openaiResults(defaultConfig, keyCredential)).toEqual([{ url: "https://example.com/a", time: {} }])
+    mockFetch(() => jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text: "No sources." }] }] }))
+    expect(await openaiResults(defaultConfig, keyCredential)).toEqual([])
+  })
+
   test("handles out-of-range annotation indices without throwing", () => {
     const output = [
       {
@@ -579,6 +651,16 @@ describe("openai", () => {
     const results = normalizeOutput(output)
     expect(results).toEqual([
       { url: "https://example.com/short", title: "Short", content: "short", time: {} },
+    ])
+  })
+
+  test("does not attribute an earlier list item to a later citation", async () => {
+    const text = "- Uncited first item.\n- Supported second item. [1]"
+    const annotations = [{ type: "url_citation", url: "https://example.com/a", start_index: text.indexOf("[1]"), end_index: text.length }]
+
+    mockFetch(() => jsonResponse({ output: [{ type: "message", content: [{ type: "output_text", text, annotations }] }] }))
+    expect(await openaiResults(defaultConfig, keyCredential)).toEqual([
+      { url: "https://example.com/a", content: "- Supported second item.", time: {} },
     ])
   })
 
@@ -677,6 +759,21 @@ describe("openai", () => {
     )
     const results = await openaiResults(defaultConfig, keyCredential)
     expect(results).toEqual([{ url: "https://example.com/alpha", title: "Alpha", time: {} }])
+  })
+
+  test("prefers complete terminal output when item events contain only search sources", async () => {
+    const search = { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/a" }] } }
+    const text = "Useful grounded information. [1]"
+    const annotations = [{ type: "url_citation", url: "https://example.com/a", start_index: text.indexOf("[1]"), end_index: text.length }]
+    const message = { type: "message", content: [{ type: "output_text", text, annotations }] }
+
+    mockFetch(() => sseResponse([
+      JSON.stringify({ type: "response.output_item.done", item: search }),
+      JSON.stringify({ type: "response.completed", response: { output: [search, message] } }),
+    ]))
+    expect(await openaiResults(defaultConfig, keyCredential)).toEqual([
+      { url: "https://example.com/a", content: "Useful grounded information.", time: {} },
+    ])
   })
 
   test("throws on a failed SSE event", async () => {

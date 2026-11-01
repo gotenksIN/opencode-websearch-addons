@@ -1,7 +1,7 @@
 import { resolveCredential } from "./auth.js"
 import type { IntegrationContext } from "./auth.js"
 import type { OpenAIOptions } from "./config.js"
-import { isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
+import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
 import type { Credential, InternalSource, JsonValue, WebSearch } from "./types.js"
 
 const publicEndpoint = "https://api.openai.com/v1/responses"
@@ -177,7 +177,7 @@ async function collectOutputItems(response: Response, credentials: readonly stri
     throw new Error("Invalid OpenAI web search response: stream ended without a terminal event")
   }
 
-  return items.length > 0 ? items : completed ?? []
+  return completed && completed.length > 0 ? completed : items
 }
 
 function streamErrorMessage(payload: Record<string, JsonValue>): string {
@@ -258,18 +258,85 @@ function collectMessage(
     if (!isJSONString(part.text)) continue
 
     if (!Array.isArray(part.annotations)) continue
+    const text = part.text
+
+    const markers = part.annotations.flatMap((annotation) => {
+      if (!isRecord(annotation) || annotation.type !== "url_citation" || !isJSONString(annotation.url) || !annotation.url) return []
+      const range = citationMarkerRange(text, annotation.start_index, annotation.end_index)
+
+      return range ? [range] : []
+    }).sort((left, right) => left.start - right.start || left.end - right.end)
 
     for (const annotation of part.annotations) {
       if (!isRecord(annotation) || annotation.type !== "url_citation") continue
       const url = isJSONString(annotation.url) ? annotation.url : undefined
 
       if (!url || url.length === 0) continue
-      const span = sliceSpan(part.text, annotation.start_index, annotation.end_index)
+      const marker = citationMarkerRange(part.text, annotation.start_index, annotation.end_index)
+
+      const span = marker
+        ? citedPassage(part.text, marker, markers)
+        : sliceSpan(part.text, annotation.start_index, annotation.end_index)
+
       const title = isJSONString(annotation.title) ? annotation.title : undefined
       const published = parsedTimestamp(annotation.published_date ?? annotation.published)
+
       addSource(sourcesByURL, order, url, { title, published, span })
     }
   }
+}
+
+interface CitationRange {
+  readonly start: number
+  readonly end: number
+}
+
+function citationMarkerRange(text: string, start: JsonValue | undefined, end: JsonValue | undefined): CitationRange | undefined {
+  if (!isJSONNumber(start) || !isJSONNumber(end) || !Number.isInteger(start) || !Number.isInteger(end)) return undefined
+
+  if (start < 0 || end <= start || end > text.length) return undefined
+
+  if (isCitationMarker(text.slice(start, end))) return { start, end }
+
+  if (!/[\uD800-\uDBFF][\uDC00-\uDFFF]/.test(text)) return undefined
+  // Some Responses-compatible providers count Unicode code points, not UTF-16 units.
+  const points = Array.from(text)
+
+  if (end > points.length || !isCitationMarker(points.slice(start, end).join(""))) return undefined
+
+  return { start: points.slice(0, start).join("").length, end: points.slice(0, end).join("").length }
+}
+
+function isCitationMarker(text: string): boolean {
+  return /^(?:\(?\[[^\]\r\n]*\]\(https?:\/\/[^\r\n]+\)\)?|\[\d+(?:[ ,–-]+\d+)*\]|cite[^]+)$/.test(text.trim())
+}
+
+function citedPassage(text: string, marker: CitationRange, markers: readonly CitationRange[]): string {
+  // Adjacent/overlapping citations attribute the same passage to every cited URL.
+  let start = marker.start
+  let boundary = 0
+
+  for (const previous of markers.toReversed()) {
+    if (previous.start >= start) continue
+    const gap = text.slice(previous.end, start)
+
+    if (previous.end >= start || (/^[\s.,;:!?]*$/.test(gap) && !/\r?\n[\t ]*\r?\n/.test(gap))) {
+      start = previous.start
+    } else {
+      boundary = previous.end
+      break
+    }
+  }
+
+  // Do not borrow unrelated paragraphs or earlier list items for an isolated marker.
+  const prefix = text.slice(boundary, start)
+  let blockStart = 0
+
+  for (const match of prefix.matchAll(/\r?\n[\t ]*\r?\n|\r?\n(?=[\t ]*(?:[-*+]|\d+[.)])\s)/g)) {
+    blockStart = match.index + match[0].length
+  }
+
+  return prefix.slice(blockStart).trim().replace(/^[.,;:!?]+\s*/, "")
 }
 
 function collectActionSources(

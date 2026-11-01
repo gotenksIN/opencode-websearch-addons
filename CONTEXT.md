@@ -434,7 +434,7 @@ The shared `parseSSE` parser joins consecutive `data:` lines with newlines and p
 It accepts LF, CRLF, and CR line endings and ignores comment lines and other fields.
 
 1. Collect items from `response.output_item.done` events where `payload.type === "response.output_item.done"`.
-2. If no done events arrive, fallback to output items in `response.completed` event (`payload.response.output`).
+2. Prefer a non-empty terminal `payload.response.output` array; otherwise fall back to collected done items. A terminal output can contain the final message even when only search items emitted individual done events.
 3. Stop consuming and cancel the response body after `response.completed` or `response.incomplete`.
 4. If `payload.type` is `response.failed` or `error`, throw an error with the provider code and message.
 5. If `content-type` does not include `text/event-stream`, reject error envelopes and require a `body.output` array.
@@ -448,7 +448,11 @@ For `message` items:
 - Inspect `content` parts with `type === "output_text"`.
 - Inspect `annotations` array for items with `type === "url_citation"`.
 - Extract `url`, `title`, and `published_date` or `published`.
-- Slice attributed text span from `text` using `[start_index, end_index]` bounds clamped to text length `[0, text.length]`.
+- For substantive annotations, slice the attributed span using `[start_index, end_index]` bounds clamped to `[0, text.length]`, retaining existing behavior.
+- When the span is only a Markdown, numbered, or native citation marker, extract the generated passage before it, bounded by the previous non-adjacent citation and the latest paragraph or list-item boundary.
+- Adjacent/overlapping marker annotations share the same preceding passage. Do not invent text for isolated markers or attach the full answer to every consulted source.
+- Validate integer marker offsets before expanding; if UTF-16 offsets do not identify a marker, try Unicode code-point offsets. Invalid offsets never trigger passage expansion.
+- Marker-to-passage mapping is a conservative proximity heuristic, not additional evidence that all text is supported. Never fetch or copy external page excerpts as part of normalization.
 
 For `web_search_call` items:
 

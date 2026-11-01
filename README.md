@@ -146,6 +146,13 @@ type Result = {
 
 The `content` field contains model-generated text segments attributed to the source URL.
 `content` does not contain verbatim text excerpts from external web pages.
+For OpenAI annotations that cover only a citation marker (such as `([source](URL))`),
+the plugin preserves the preceding passage in the same paragraph or list item instead of returning the link alone.
+Consecutive citations share that passage; an earlier citation, paragraph break, or new list item bounds extraction.
+This is a proximity-based attribution heuristic, not a guarantee that every sentence is supported by every cited URL.
+Annotations that already cover substantive text retain their original spans.
+Uncited action sources remain URL-only when no attributed text is available; the full answer is never copied to every source.
+These are generated summaries, not page contents: reading an original source may still be necessary to verify details.
 The plugin returns an empty array `[]` when a request succeeds with no grounded web sources.
 
 ## Development workflow

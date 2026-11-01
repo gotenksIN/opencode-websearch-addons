@@ -2,6 +2,11 @@
 
 All notable changes to `opencode-websearch-addons` are documented in this file.
 
+## Unreleased
+
+- Preserve the surrounding generated passage when OpenAI citation annotations cover only a link/marker, with paragraph, list-item, and previous-citation boundaries, shared citations, deduplication, and Unicode-aware marker offsets.
+- Prefer complete terminal SSE output so a final cited answer is not lost when only search items emitted individual done events.
+
 ## 1.0.10 (2026-10-29)
 
 - Update `@opencode/plugin` to `2.2.1`, Oxlint dependencies to `1.90.0`, and `@types/bun` to `1.4.4`.
