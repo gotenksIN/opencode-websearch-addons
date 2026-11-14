@@ -2,40 +2,8 @@
   "name": "opencode-websearch-addons",
   "version": "1.0.10",
   "description": "OpenCode V2 plugin that adds OpenAI and Gemini native web search providers to the built-in websearch tool.",
+  "homepage": "https://github.com/gotenksIN/opencode-websearch-addons",
   "license": "MIT",
-  "type": "module",
-  "main": "./dist/index.js",
-  "exports": {
-    ".": "./dist/index.js",
-    "./source": "./index.ts"
-  },
-  "files": ["dist", "index.ts", "src"],
-  "scripts": {
-    "lint": "oxlint .",
-    "test": "bun test",
-    "test:agent": "AGENT=1 bun test --bail",
-    "test:live": "bun test tests/live.test.ts",
-    "typecheck": "tsc --noEmit",
-    "check": "tsc --noEmit && bun test",
-    "prepack": "bun run build",
-    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin --external effect"
-  },
-  "peerDependencies": {
-    "@opencode/plugin": "^2.3.0",
-    "effect": "^4.0.0"
-  },
-  "devDependencies": {
-    "@opencode/plugin": "latest",
-    "@opencode/core": "latest",
-    "effect": "4.1.0",
-    "@oxlint/plugins": "1.90.0",
-    "@types/bun": "1.4.4",
-    "oxlint": "1.90.0",
-    "typescript": "7.0.2"
-  },
-  "engines": {
-    "bun": ">=1.2.0"
-  },
   "author": {
     "name": "Omkar Chandorkar",
     "email": "gotenksIN@aospa.co"
@@ -44,5 +12,44 @@
     "type": "git",
     "url": "git+https://github.com/gotenksIN/opencode-websearch-addons.git"
   },
-  "homepage": "https://github.com/gotenksIN/opencode-websearch-addons"
+  "files": [
+    "dist",
+    "index.ts",
+    "src"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./source": "./index.ts"
+  },
+  "scripts": {
+    "lint": "oxlint --type-aware .",
+    "format": "oxfmt --write .",
+    "test": "bun test",
+    "test:agent": "AGENT=1 bun test --bail",
+    "test:live": "bun test tests/live.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "oxlint --type-aware . && oxfmt --check . && tsc --noEmit && bun test",
+    "prepack": "bun run build",
+    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin --external effect"
+  },
+  "devDependencies": {
+    "@opencode/core": "latest",
+    "@opencode/plugin": "latest",
+    "@types/bun": "1.4.4",
+    "effect": "4.1.0",
+    "oxfmt": "^0.78.0",
+    "oxlint": "^1.93.0",
+    "oxlint-tsgolint": "^7.0.2007",
+    "typescript": "7.0.2",
+    "ultracite": "^8.2.0"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "^2.3.0",
+    "effect": "^4.0.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  }
 }

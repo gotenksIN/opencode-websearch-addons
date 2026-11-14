@@ -7,7 +7,8 @@ Development dependencies use `latest`; the verified host and plugin SDK resolve 
 Runtime peers are `@opencode/plugin ^2.3.0` and `effect ^4.0.0`; these are minimum floors, not a fixed host target.
 The ESM bundle externalizes both packages to preserve host runtime identity.
 Use Bun and the scripts in `package.json` for installation, verification, and builds.
-Keep the existing Oxlint configuration and vendored anti-slop rules together.
+Use Ultracite core and anti-slop with type-aware Oxlint and Oxfmt.
+Keep core lint rules unrelaxed and preserve semantic Markdown line breaks.
 
 ## Module boundaries
 
@@ -41,11 +42,11 @@ Do not blindly merge arbitrary model-request configuration into native search bo
 
 ## OpenAI wire contract
 
-| Credential | Endpoint | Authentication headers |
-| --- | --- | --- |
-| Key | `<settings.baseURL>/responses` or `https://api.openai.com/v1/responses` | Bearer key |
-| OAuth `chatgpt-token-sharing` | Same as key | Bearer access token |
-| OAuth `chatgpt-browser` / `chatgpt-headless` | `https://chatgpt.com/backend-api/codex/responses` | Bearer access token, `originator: opencode`, optional `chatgpt-account-id` |
+| Credential                                   | Endpoint                                                                | Authentication headers                                                     |
+| -------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Key                                          | `<settings.baseURL>/responses` or `https://api.openai.com/v1/responses` | Bearer key                                                                 |
+| OAuth `chatgpt-token-sharing`                | Same as key                                                             | Bearer access token                                                        |
+| OAuth `chatgpt-browser` / `chatgpt-headless` | `https://chatgpt.com/backend-api/codex/responses`                       | Bearer access token, `originator: opencode`, optional `chatgpt-account-id` |
 
 Reject unknown OAuth methods and external credentials.
 All requests use POST, JSON content type, `Accept: text/event-stream`, `redirect: "error"`, and the combined cancellation/timeout signal.
@@ -143,7 +144,8 @@ Use bounded search prompts, low/minimal budgets, explicit test timeouts above re
 Requests can incur charges.
 Do not log credentials or preserve real provider responses as fixtures.
 
-Run `bun run typecheck`, `bun run lint`, `bun test`, and `bun run build`.
+Run `bun run format`, `bun run check`, and `bun run build`.
+The check gate runs `oxlint --type-aware .`, `oxfmt --check .`, type checking, and the full test suite.
 Use `bun test websearch.test.ts` for deterministic development checks and `bun run test:live` for only live E2E.
 The deterministic command is not evidence that the full suite passes.
 

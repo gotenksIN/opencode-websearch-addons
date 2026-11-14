@@ -25,9 +25,9 @@ Add the plugin package to your `opencode.json` or `opencode.jsonc` configuration
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode-websearch-addons"
-    }
-  ]
+      "package": "opencode-websearch-addons",
+    },
+  ],
 }
 ```
 
@@ -54,8 +54,8 @@ Select your web search provider in your OpenCode configuration file.
 ```jsonc
 {
   "websearch": {
-    "provider": "google"
-  }
+    "provider": "google",
+  },
 }
 ```
 
@@ -109,31 +109,31 @@ Configure plugin options in your OpenCode configuration file under `plugins`.
         "openai": {
           "model": "gpt-6-luna",
           "reasoningEffort": "medium",
-          "searchContextSize": "medium"
+          "searchContextSize": "medium",
         },
         "google": {
           "model": "gemini-3.5-flash-lite",
           "thinkingLevel": "medium",
-          "searchTimeRange": "any"
-        }
-      }
-    }
-  ]
+          "searchTimeRange": "any",
+        },
+      },
+    },
+  ],
 }
 ```
 
 ### Options reference
 
-| Option | Type | Default | Validation rules |
-| --- | --- | --- | --- |
-| `openai.model` | string | `"gpt-6-luna"` | Non-empty string up to 100 characters |
-| `openai.reasoningEffort` | string | `"medium"` | `"none"`, `"minimal"`, `"low"`, or `"medium"` |
-| `openai.searchContextSize` | string | `"medium"` | `"low"`, `"medium"`, or `"high"` |
-| `openai.userLocation` | object | `undefined` | Optional object with string fields `city`, `country`, `region`, or `timezone` |
-| `google.model` | string | `"gemini-3.5-flash-lite"` | Non-empty string up to 100 characters |
-| `google.thinkingLevel` | string | `"medium"` | `"minimal"`, `"low"`, or `"medium"` |
-| `google.searchTimeRange` | string | `"any"` | `"any"`, `"lastDay"`, `"lastWeek"`, `"lastMonth"`, or `"lastYear"` |
-| `timeoutMs` | number | `120000` | Integer from 100 through 120000 |
+| Option                     | Type   | Default                   | Validation rules                                                              |
+| -------------------------- | ------ | ------------------------- | ----------------------------------------------------------------------------- |
+| `openai.model`             | string | `"gpt-6-luna"`            | Non-empty string up to 100 characters                                         |
+| `openai.reasoningEffort`   | string | `"medium"`                | `"none"`, `"minimal"`, `"low"`, or `"medium"`                                 |
+| `openai.searchContextSize` | string | `"medium"`                | `"low"`, `"medium"`, or `"high"`                                              |
+| `openai.userLocation`      | object | `undefined`               | Optional object with string fields `city`, `country`, `region`, or `timezone` |
+| `google.model`             | string | `"gemini-3.5-flash-lite"` | Non-empty string up to 100 characters                                         |
+| `google.thinkingLevel`     | string | `"medium"`                | `"minimal"`, `"low"`, or `"medium"`                                           |
+| `google.searchTimeRange`   | string | `"any"`                   | `"any"`, `"lastDay"`, `"lastWeek"`, `"lastMonth"`, or `"lastYear"`            |
+| `timeoutMs`                | number | `120000`                  | Integer from 100 through 120000                                               |
 
 ### Search features and wire mappings
 
@@ -192,11 +192,19 @@ Run type checking:
 bun run typecheck
 ```
 
-Run the linter:
+Run type-aware Oxlint with Ultracite core and anti-slop:
 
 ```sh
 bun run lint
 ```
+
+Format code and documentation with Oxfmt:
+
+```sh
+bun run format
+```
+
+Markdown formatting preserves semantic line breaks.
 
 Run the full suite, including live E2E searches:
 
@@ -208,7 +216,7 @@ The legacy-route scenario requires OpenSSL to create a temporary test certificat
 It uses a trusted loopback CONNECT proxy in isolated subprocesses.
 It does not disable TLS verification, change production endpoints, or send real credentials.
 
-Run type checking and the full suite together:
+Check lint, formatting, types, and the full suite together:
 
 ```sh
 bun run check
@@ -217,7 +225,7 @@ bun run check
 Run the full suite with fail-fast behavior:
 
 ```sh
-bun test:agent
+bun run test:agent
 ```
 
 Live tests read OpenCode's resolved configuration without changing your global configuration or active connections.

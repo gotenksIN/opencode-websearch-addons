@@ -8,7 +8,12 @@ Do not use `npm`, `npx`, or `bunx`.
 - `bun test`: Run the test suite.
 - `bun run typecheck`: Run TypeScript type checking.
 - `bun run build`: Build the ESM distribution bundle.
-- `bun run lint`: Run code linter checks.
+- `bun run lint`: Run `oxlint --type-aware .` with Ultracite core and anti-slop.
+- `bun run format`: Apply Oxfmt formatting.
+- `bun run check`: Check lint, formatting, types, and the full test suite.
+
+Keep the core lint rules unrelaxed.
+Preserve semantic Markdown line breaks with Oxfmt's `proseWrap: "preserve"`.
 
 Maintain compatibility with the latest available OpenCode V2 plugin API.
 Keep development host and plugin SDK dependencies on `latest`; `^2.3.0` is the minimum runtime peer floor, not a compatibility ceiling.
