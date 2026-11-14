@@ -2,6 +2,17 @@
 
 All notable changes to `opencode-websearch-addons` are documented in this file.
 
+## 1.1.0 (2026-11-14)
+
+- Move `@opencode/plugin` (`^2.3.0`) and `effect` (`^4.0.0`) to `peerDependencies`, externalize both in the distribution bundle, and remove legacy `ctx.catalog` compatibility shims.
+- Route `chatgpt-token-sharing` OAuth credentials through the configured provider `baseURL` or `https://api.openai.com/v1/responses` without Codex headers, restrict the Codex endpoint to `chatgpt-browser` and `chatgpt-headless`, and reject unknown OAuth methods.
+- Reject OpenAI `response.incomplete` stream events and JSON `status: "incomplete"` responses with redacted details, and send explicit `Accept: text/event-stream` headers.
+- Accumulate Gemini `groundingChunks` and `groundingSupports` in arrival order across streamed events, deduplicate result URLs after support resolution, preserve source URLs unmodified, and reject `ESCALATION` and `PUP_LIMITED_DISABLED` finish reasons.
+- Emit sanitized Effect `HttpClientError` causes on failed HTTP responses for host 429 cooldowns and status-specific messages, omit out-of-range publication timestamps (`±8.64e15` ms), and restrict result URLs to `http:` and `https:`.
+- Narrow `openai.reasoningEffort` to `none`, `minimal`, `low`, and `medium`, narrow `google.thinkingLevel` to `minimal`, `low`, and `medium`, and privatize internal helpers and option constants.
+- Replace helper micro-tests and fetch spies with an in-process `@opencode/core` host suite, loopback transport failure scenarios, and default live E2E tests reading configured OpenCode `baseURL` and `apiKey` settings.
+- Migrate linting and formatting from vendored anti-slop rules to Ultracite, Oxfmt, and type-aware Oxlint (`oxlint --type-aware`), and reconcile `README.md`, `CONTEXT.md`, and `AGENTS.md`.
+
 ## 1.0.10 (2026-10-29)
 
 - Update `@opencode/plugin` to `2.2.1`, Oxlint dependencies to `1.90.0`, and `@types/bun` to `1.4.4`.
