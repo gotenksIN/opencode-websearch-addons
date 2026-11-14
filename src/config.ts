@@ -1,19 +1,19 @@
 import { isJSONString, isRecord } from "./types.js"
 import type { JsonValue } from "./types.js"
 
-export const reasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const
+const reasoningEfforts = ["none", "minimal", "low", "medium"] as const
 
 export type ReasoningEffort = (typeof reasoningEfforts)[number]
 
-export const thinkingLevels = ["minimal", "low", "medium", "high"] as const
+const thinkingLevels = ["minimal", "low", "medium"] as const
 
 export type ThinkingLevel = (typeof thinkingLevels)[number]
 
-export const searchContextSizes = ["low", "medium", "high"] as const
+const searchContextSizes = ["low", "medium", "high"] as const
 
 export type SearchContextSize = (typeof searchContextSizes)[number]
 
-export const searchTimeRanges = ["any", "lastDay", "lastWeek", "lastMonth", "lastYear"] as const
+const searchTimeRanges = ["any", "lastDay", "lastWeek", "lastMonth", "lastYear"] as const
 
 export type SearchTimeRange = (typeof searchTimeRanges)[number]
 
@@ -45,7 +45,7 @@ export interface PluginConfig {
   readonly timeoutMs: number
 }
 
-export const defaultConfig: PluginConfig = {
+const defaultConfig: PluginConfig = {
   openai: {
     model: "gpt-6-luna",
     reasoningEffort: "medium",
@@ -85,7 +85,7 @@ export function parseConfig(options: JsonValue = {}): PluginConfig {
   const reasoningEffort = openai.reasoningEffort ?? defaultConfig.openai.reasoningEffort
 
   if (!isOneOf(reasoningEffort, reasoningEfforts)) {
-    throw invalidOption("openai.reasoningEffort", 'one of "none", "minimal", "low", "medium", "high", "xhigh", or "max"')
+    throw invalidOption("openai.reasoningEffort", 'one of "none", "minimal", "low", or "medium"')
   }
 
   const searchContextSize = openai.searchContextSize ?? defaultConfig.openai.searchContextSize
@@ -105,7 +105,7 @@ export function parseConfig(options: JsonValue = {}): PluginConfig {
   const thinkingLevel = google.thinkingLevel ?? defaultConfig.google.thinkingLevel
 
   if (!isOneOf(thinkingLevel, thinkingLevels)) {
-    throw invalidOption("google.thinkingLevel", 'one of "minimal", "low", "medium", or "high"')
+    throw invalidOption("google.thinkingLevel", 'one of "minimal", "low", or "medium"')
   }
 
   const searchTimeRange = google.searchTimeRange ?? defaultConfig.google.searchTimeRange

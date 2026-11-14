@@ -1,23 +1,7 @@
 import type { Credential, Plugin, WebSearch } from "@opencode/plugin"
+import { HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
 
 export type { Credential, Plugin, WebSearch }
-
-interface ProviderSettingsResponse {
-  readonly data?: {
-    readonly settings?: unknown
-  }
-}
-
-interface ProviderSettingsLookup {
-  get(input: { readonly providerID: string }): Promise<ProviderSettingsResponse | undefined>
-}
-
-export interface ProviderSettingsContext {
-  readonly catalog?: {
-    readonly provider: ProviderSettingsLookup
-  }
-  readonly provider?: ProviderSettingsLookup
-}
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { readonly [key: string]: JsonValue | undefined }
 
@@ -49,16 +33,12 @@ export async function awaitLookup<T>(operation: () => Promise<T>, signal?: Abort
 }
 
 export async function providerBaseURL(
-  ctx: ProviderSettingsContext,
+  ctx: Pick<Plugin.Context, "provider">,
   providerID: string,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
-  const lookup = ctx.provider ?? ctx.catalog?.provider
-
-  if (!lookup) return undefined
-
   try {
-    const result = await awaitLookup(() => lookup.get({ providerID }), signal)
+    const result = await awaitLookup(() => ctx.provider.get({ providerID }), signal)
     const settings = result?.data?.settings
     const baseURL = settings !== undefined && isRecord(settings) ? settings["baseURL"] : undefined
 
@@ -91,12 +71,19 @@ function finiteNumber(value: JsonValue | undefined): number | undefined {
 export function parsedTimestamp(value: JsonValue | undefined): number | undefined {
   const direct = finiteNumber(value)
 
-  if (direct !== undefined) return direct
+  if (direct !== undefined) return Math.abs(direct) <= 8.64e15 ? direct : undefined
 
   if (!isJSONString(value) || value.length === 0) return undefined
   const parsed = Date.parse(value)
 
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+export function isSourceURL(value: string): boolean {
+  if (!URL.canParse(value)) return false
+  const { protocol } = new URL(value)
+
+  return protocol === "http:" || protocol === "https:"
 }
 
 export function sliceSpan(text: string, rawStart: JsonValue | undefined, rawEnd: JsonValue | undefined): string {
@@ -153,7 +140,19 @@ export async function providerError(
   }
 
   const sanitizedDetail = detail ? sanitizeProviderMessage(detail, credentials) : undefined
-  throw new Error(`${provider} web search failed (HTTP ${response.status})${sanitizedDetail ? `: ${sanitizedDetail}` : ""}`)
+  const description = `${provider} web search failed (HTTP ${response.status})${sanitizedDetail ? `: ${sanitizedDetail}` : ""}`
+  // Keep only synthetic, credential-free metadata. Do not retain the native
+  // response, request URL, headers, body, or transport cause in the error.
+  const request = HttpClientRequest.post("https://provider.invalid/")
+  const headers = new Headers()
+  const retryAfter = response.headers.get("retry-after")
+
+  if (retryAfter) headers.set("retry-after", sanitizeProviderMessage(retryAfter, credentials))
+  const safeResponse = HttpClientResponse.fromWeb(request, new Response(null, { status: response.status, headers }))
+
+  throw new HttpClientError.HttpClientError({
+    reason: new HttpClientError.StatusCodeError({ request, response: safeResponse, description }),
+  })
 }
 
 export async function* parseSSE(

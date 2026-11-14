@@ -10,7 +10,9 @@ Do not use `npm`, `npx`, or `bunx`.
 - `bun run build`: Build the ESM distribution bundle.
 - `bun run lint`: Run code linter checks.
 
-Always maintain compatibility with the OpenCode V2 plugin API.
+Maintain compatibility with the latest available OpenCode V2 plugin API.
+Keep development host and plugin SDK dependencies on `latest`; `^2.3.0` is the minimum runtime peer floor, not a compatibility ceiling.
+Keep `@opencode/plugin` and `effect` as runtime peers and external build imports.
 
 ## Code standards
 
@@ -24,12 +26,20 @@ Always maintain compatibility with the OpenCode V2 plugin API.
 - Return results that satisfy OpenCode's `WebSearch.Result` schema.
 - Return an empty array when a valid response contains no grounded web sources.
 - Keep `content` limited to model-generated text spans attributed to a source URL; never copy verbatim source excerpts.
+- Read only provider `settings.baseURL` and fallback `settings.apiKey`; direct HTTP does not inherit the model pipeline.
+- Preserve Google source URLs. `WebSearch.Result` cannot display `searchEntryPoint`; do not claim full Grounding Display Terms compliance.
 
 ## Test contracts
 
-- Test public provider execution paths with mocked `fetch` calls and mock integration contexts.
+- Execute `index.ts` through the latest `@opencode/core` in-process host and built-in websearch tool.
+- Use real fetch with `Bun.serve({ port: 0 })` for deterministic HTTP/SSE failure scenarios.
+- Keep each observable contract in one owning scenario. Keep implementation helpers private.
+- Do not monkeypatch global fetch, imitate plugin contexts, or import implementation modules from tests.
 - Assert normalized `WebSearch.Result` output, endpoint routing, request headers, request payloads, stream parsing, error messages, and abort or timeout behavior.
-- Test configuration validation through `parseConfig` defaults and exact error messages.
+- Test defaults, valid options, and exact validation errors through plugin setup.
 - Do not write tests that only verify symbol presence, command registrations, or type definitions.
 - Let the TypeScript compiler enforce static type relationships.
-- Run live smoke tests only with `LIVE=1` and real provider credentials.
+- Run live E2E by default in `bun test`. Read `openai` and `google` baseURL/apiKey through OpenCode config/provider resolution, read-only.
+- Fail clearly on missing live prerequisites; do not skip. ChatGPT OAuth is not a live prerequisite.
+- Isolate test credentials and state. Do not mutate global user state or retain live provider responses as fixtures.
+- Bound live prompts, cost, and request budgets. Set explicit test timeouts above request budgets.

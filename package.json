@@ -14,16 +14,20 @@
     "lint": "oxlint .",
     "test": "bun test",
     "test:agent": "AGENT=1 bun test --bail",
-    "test:live": "LIVE=1 bun test",
+    "test:live": "bun test tests/live.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "tsc --noEmit && bun test",
     "prepack": "bun run build",
-    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin"
+    "build": "bun build index.ts --outdir dist --target bun --format esm --external @opencode/plugin --external effect"
   },
-  "dependencies": {
-    "@opencode/plugin": "2.2.1"
+  "peerDependencies": {
+    "@opencode/plugin": "^2.3.0",
+    "effect": "^4.0.0"
   },
   "devDependencies": {
+    "@opencode/plugin": "latest",
+    "@opencode/core": "latest",
+    "effect": "4.1.0",
     "@oxlint/plugins": "1.90.0",
     "@types/bun": "1.4.4",
     "oxlint": "1.90.0",

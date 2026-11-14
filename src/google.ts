@@ -1,7 +1,7 @@
 import { resolveCredential } from "./auth.js"
 import type { IntegrationContext } from "./auth.js"
 import type { GoogleOptions, SearchTimeRange } from "./config.js"
-import { isJSONNumber, isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, toResult } from "./types.js"
+import { isJSONNumber, isJSONString, isRecord, isSourceURL, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, toResult } from "./types.js"
 import type { InternalSource, JsonValue, WebSearch } from "./types.js"
 
 const apiBase = "https://generativelanguage.googleapis.com/v1beta"
@@ -10,7 +10,6 @@ const thinkingLevelWire = {
   minimal: "MINIMAL",
   low: "LOW",
   medium: "MEDIUM",
-  high: "HIGH",
 }
 
 const blockedFinishReasons = new Set([
@@ -25,9 +24,15 @@ const blockedFinishReasons = new Set([
   "IMAGE_PROHIBITED_CONTENT",
   "IMAGE_RECITATION",
   "LANGUAGE",
+  "ESCALATION",
+  "PUP_LIMITED_DISABLED",
 ])
 
 const errorFinishReasons = new Set([
+  "MAX_TOKENS",
+  "CONTINUATION",
+  "OTHER",
+  "IMAGE_OTHER",
   "MALFORMED_FUNCTION_CALL",
   "UNEXPECTED_TOOL_CALL",
   "NO_IMAGE",
@@ -70,6 +75,7 @@ export async function searchGoogle(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        Accept: "text/event-stream",
         "x-goog-api-key": credential.key,
       },
       body: JSON.stringify(buildGenerateContentBody(config, query)),
@@ -104,7 +110,7 @@ function buildGenerateContentBody(config: GoogleOptions, query: string) {
   return body
 }
 
-export function timeRangeFilterFor(range: SearchTimeRange, now: Date = new Date()) {
+function timeRangeFilterFor(range: SearchTimeRange, now: Date = new Date()) {
   const start = new Date(now)
 
   switch (range) {
@@ -235,7 +241,7 @@ function mergeChunk(merged: MergedCandidate, payload: JsonValue, credentials: re
   }
 
   if (isRecord(payload.promptFeedback) && isJSONString(payload.promptFeedback.blockReason)) {
-    merged.blockReason = payload.promptFeedback.blockReason
+    merged.blockReason = sanitizeProviderMessage(payload.promptFeedback.blockReason, credentials)
   }
 
   if (!Array.isArray(payload.candidates) || payload.candidates.length === 0) return merged
@@ -259,19 +265,27 @@ function mergeChunk(merged: MergedCandidate, payload: JsonValue, credentials: re
       Array.isArray(metadata.groundingChunks) || Array.isArray(metadata.groundingSupports)
 
     if (hasGrounding) {
-      const previous: Record<string, JsonValue> = merged.grounding ?? {}
-      merged.grounding = { ...previous, ...metadata }
+      const grounding = merged.grounding ??= {}
+
+      for (const key of ["groundingChunks", "groundingSupports"]) {
+        const incoming = metadata[key]
+
+        if (!Array.isArray(incoming)) continue
+        const previous = grounding[key]
+
+        grounding[key] = Array.isArray(previous) ? previous.concat(incoming) : [...incoming]
+      }
     }
   }
 
   if (isJSONString(candidate.finishReason)) {
-    merged.finishReason = candidate.finishReason
+    merged.finishReason = sanitizeProviderMessage(candidate.finishReason, credentials)
   }
 
   return merged
 }
 
-export function normalizeGenerateContent(merged: MergedCandidate): readonly WebSearch.Result[] {
+function normalizeGenerateContent(merged: MergedCandidate): readonly WebSearch.Result[] {
   const finishReason = merged.finishReason
   const blockReason = merged.blockReason
 
@@ -299,7 +313,7 @@ export function normalizeGenerateContent(merged: MergedCandidate): readonly WebS
     const web = isRecord(rawChunk.web) ? rawChunk.web : {}
     const url = isJSONString(web.uri) ? web.uri : undefined
 
-    if (!url || url.length === 0) return
+    if (!url || !isSourceURL(url)) return
     const title = isJSONString(web.title) ? web.title : undefined
     const published = parsedTimestamp(web.published_date ?? web.published)
     let source = sourcesByURL.get(url)

@@ -1,999 +1,621 @@
-import { afterEach, describe, expect, test, vi } from "bun:test"
-import type { Plugin } from "@opencode/plugin"
-import { defaultConfig, parseConfig } from "./src/config.js"
-import type { PluginConfig, ThinkingLevel } from "./src/config.js"
-import { searchGoogle } from "./src/google.js"
-import { normalizeGenerateContent, timeRangeFilterFor } from "./src/google.js"
-import { normalizeOutput, searchOpenAI } from "./src/openai.js"
-import { resolveCredential } from "./src/auth.js"
-import type { ProviderSettingsContext } from "./src/types.js"
+import { describe, expect, spyOn, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { createServer } from "node:http"
+import { connect } from "node:net"
+import { join } from "node:path"
+import { Cause, Exit, Schema } from "effect"
+import { HttpClientError } from "effect/http"
+import { WebSearch } from "@opencode/core/websearch"
+import { createHost } from "./tests/host.js"
+import { barrier, cleanup, serve, sse } from "./tests/transport.js"
 
-afterEach(() => {
-  vi.restoreAllMocks()
-})
+const fakeKey = "fixture-secret-123456"
 
-type JsonValue = string | number | boolean | null | JsonValue[] | { readonly [key: string]: JsonValue }
+const empty = () => Response.json({ output: [], candidates: [{ finishReason: "STOP" }] })
 
-interface OpenAIRequestBody {
-  readonly model: string
-  readonly tools: readonly OpenAISearchTool[]
-  readonly reasoning: { readonly effort: string }
-  readonly include: readonly string[]
-  readonly store: boolean
-  readonly stream: boolean
-  readonly instructions?: string
-}
+describe("host setup and wire options", () => {
+  test("defaults execute both providers through the real host and dispose registrations", async () => {
+    const requests: { path: string; body: object; accept: string | null }[] = []
 
-interface OpenAISearchTool {
-  readonly type: string
-  readonly search_context_size: string
-  readonly external_web_access: boolean
-  readonly user_location?: {
-    readonly type: string
-    readonly city?: string
-    readonly country?: string
-    readonly region?: string
-    readonly timezone?: string
-  }
-}
+    const origin = serve(async (request) => {
+      requests.push({
+        path: new URL(request.url).pathname,
+        body: Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(await request.json()),
+        accept: request.headers.get("accept"),
+      })
 
-interface GoogleRequestBody {
-  readonly contents: readonly {
-    readonly role: string
-    readonly parts: readonly { readonly text: string }[]
-  }[]
-  readonly tools: readonly GoogleSearchTool[]
-  readonly generationConfig: { readonly thinkingConfig: { readonly thinkingLevel: string } }
-}
-
-interface GoogleSearchTool {
-  readonly googleSearch: {
-    readonly timeRangeFilter?: { readonly startTime: string; readonly endTime: string }
-  }
-}
-
-function mockFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
-  const implementation = async (input: string | URL | Request, init?: RequestInit) => {
-    const url = input instanceof URL ? String(input) : input instanceof Request ? input.url : input
-
-    return handler(url, init ?? {})
-  }
-
-  // SAFETY: bun's `typeof fetch` includes statics such as preconnect; the mock
-  // implements only the callable contract these tests exercise.
-  return vi.spyOn(globalThis, "fetch").mockImplementation(implementation as typeof fetch)
-}
-
-function sseResponse(events: readonly string[]): Response {
-  const body = events.map((event) => `data: ${event}\n\n`).join("")
-
-  return new Response(body, { headers: { "Content-Type": "text/event-stream" } })
-}
-
-function jsonResponse(body: JsonValue, status = 200, contentType = "application/json"): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": contentType } })
-}
-
-function bodyOf<T>(init: RequestInit): T {
-  return JSON.parse(String(init.body))
-}
-
-function headerValue(value: string | ReadonlyArray<string>): string {
-  if (value instanceof Array) return value.join(", ")
-
-  return value
-}
-
-function headersOf(init: RequestInit): Record<string, string> {
-  const headers = init.headers
-
-  if (headers === undefined) return {}
-
-  if (headers instanceof Headers) {
-    return headers.toJSON()
-  }
-
-  if (Array.isArray(headers)) {
-    return Object.fromEntries(
-      headers
-        .filter((entry) => entry.length >= 2)
-        .map((entry) => [entry[0]!, entry[1]!] as const),
-    )
-  }
-
-  return Object.fromEntries(
-    Object.entries(headers).map(([key, value]) => [key, headerValue(value)] as const),
-  )
-}
-
-function providerCtx(
-  auth: { readonly connection?: JsonValue; readonly credential?: JsonValue },
-  settings?: Record<string, JsonValue>,
-): ProviderSettingsContext & Pick<Plugin.Context, "integration"> {
-  // SAFETY: test double for the plugin context. The connection methods return
-  // the fixture values regardless of their arguments, which matches the subset
-  // of the integration contract these unit tests exercise.
-  return {
-    integration: {
-      connection: {
-        active: async () => auth.connection,
-        resolve: async () => auth.credential,
-      },
-    },
-    catalog: {
-      provider: {
-        get: async () => ({ data: { settings: settings ?? {} } }),
-      },
-    },
-  } as never
-}
-
-function connectionCtx(
-  active: () => Promise<JsonValue | undefined>,
-  resolve: () => Promise<JsonValue | undefined>,
-): ProviderSettingsContext & Pick<Plugin.Context, "integration"> {
-  // SAFETY: test double for the plugin context. It implements only the
-  // connection subset used by resolveCredential and has no catalog fallback.
-  return {
-    integration: {
-      connection: { active, resolve },
-    },
-  } as never
-}
-
-const keyCredential = { type: "key", key: "sk-test-secret-key-123" } as const
-
-const oauthCredential = {
-  type: "oauth",
-  methodID: "chatgpt-browser",
-  refresh: "refresh-token",
-  access: "access-token-456",
-  expires: 4_000_000_000,
-  metadata: { accountID: "acc-1001" },
-} as const
-
-const fullConfig: PluginConfig = {
-  openai: {
-    model: "gpt-custom-model",
-    reasoningEffort: "high",
-    searchContextSize: "high",
-    userLocation: { city: "London", country: "GB" },
-  },
-  google: {
-    model: "gemini-custom-model",
-    thinkingLevel: "high",
-    searchTimeRange: "lastWeek",
-  },
-  timeoutMs: 60_000,
-}
-
-async function openaiResults(config: PluginConfig, auth: JsonValue, query = "what is the weather") {
-  return searchOpenAI(
-    providerCtx({ connection: {}, credential: auth }),
-    config.openai,
-    config.timeoutMs,
-    query,
-    new AbortController().signal,
-  )
-}
-
-async function googleResults(config: PluginConfig, auth: JsonValue, query = "what is the weather") {
-  return searchGoogle(
-    providerCtx({ connection: {}, credential: auth }),
-    config.google,
-    config.timeoutMs,
-    query,
-    new AbortController().signal,
-  )
-}
-
-describe("options", () => {
-  test("applies defaults when no options are supplied", () => {
-    expect(parseConfig({})).toEqual({
-      openai: {
-        model: "gpt-6-luna",
-        reasoningEffort: "medium",
-        searchContextSize: "medium",
-      },
-      google: {
-        model: "gemini-3.5-flash-lite",
-        thinkingLevel: "medium",
-        searchTimeRange: "any",
-      },
-      timeoutMs: 120_000,
+      return empty()
     })
+
+    const host = await createHost(origin)
+    cleanup(host.close)
+    expect((await host.query("openai")).results).toEqual([])
+    expect((await host.query("google")).results).toEqual([])
+    expect(requests).toEqual([
+      {
+        path: "/responses",
+        accept: "text/event-stream",
+        body: {
+          model: "gpt-6-luna",
+          input: [{ role: "user", content: [{ type: "input_text", text: "fixture query" }] }],
+          tools: [{ type: "web_search", search_context_size: "medium", external_web_access: true }],
+          reasoning: { effort: "medium" },
+          include: ["web_search_call.action.sources"],
+          store: false,
+          stream: true,
+        },
+      },
+      {
+        path: "/models/gemini-3.5-flash-lite:streamGenerateContent",
+        accept: "text/event-stream",
+        body: {
+          contents: [{ role: "user", parts: [{ text: "fixture query" }] }],
+          tools: [{ googleSearch: {} }],
+          generationConfig: { thinkingConfig: { thinkingLevel: "MEDIUM" } },
+        },
+      },
+    ])
+    await host.disposePlugin()
+    await expect(host.query("openai")).rejects.toThrow()
   })
 
-  test("accepts configured model, reasoning, and provider-specific values", () => {
-    const config = parseConfig({
-      timeoutMs: 30_000,
-      openai: {
-        model: "gpt-5.6-luna",
-        reasoningEffort: "max",
-        searchContextSize: "high",
-        userLocation: { city: "London", country: "GB", region: "England", timezone: "Europe/London" },
-      },
-      google: {
-        model: "gemini-3.5-flash-lite",
-        thinkingLevel: "low",
-        searchTimeRange: "lastYear",
+  test("valid overrides reach provider payloads with bounded calendar filters", async () => {
+    const bodies: object[] = []
+
+    const origin = serve(async (request) => {
+      bodies.push(Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(await request.json()))
+      expect(request.url).toMatch(/\/responses$|\/models\/gemini-custom:streamGenerateContent\?alt=sse$/)
+
+      return empty()
+    })
+
+    for (const [effort, thinking, range, size] of [
+      ["none", "minimal", "lastDay", "low"],
+      ["minimal", "low", "lastWeek", "high"],
+      ["low", "medium", "lastMonth", "medium"],
+      ["medium", "minimal", "lastYear", "low"],
+    ] as const) {
+      const host = await createHost(origin, {
+        timeoutMs: 1000,
+        openai: {
+          model: "openai-custom",
+          reasoningEffort: effort,
+          searchContextSize: size,
+          userLocation: { city: "London", country: "GB", region: "", timezone: "Europe/London" },
+        },
+        google: { model: "gemini-custom", thinkingLevel: thinking, searchTimeRange: range },
+      })
+
+      cleanup(host.close)
+      await host.query("openai")
+      await host.query("google")
+      expect(bodies.at(-2)).toMatchObject({
+        model: "openai-custom",
+        reasoning: { effort },
+        tools: [{
+          search_context_size: size,
+          user_location: { type: "approximate", city: "London", country: "GB", timezone: "Europe/London" },
+        }],
+      })
+
+      const googleBody = Schema.decodeUnknownSync(Schema.Struct({
+        tools: Schema.Array(Schema.Struct({
+          googleSearch: Schema.Struct({
+            timeRangeFilter: Schema.Struct({ startTime: Schema.String, endTime: Schema.String }),
+          }),
+        })),
+        generationConfig: Schema.Struct({ thinkingConfig: Schema.Struct({ thinkingLevel: Schema.String }) }),
+      }))(bodies.at(-1))
+
+      const filter = googleBody.tools[0]?.googleSearch.timeRangeFilter
+      expect(filter?.startTime).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/)
+      expect(filter?.endTime).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/)
+      expect(Date.parse(filter?.startTime ?? "")).toBeLessThan(Date.parse(filter?.endTime ?? ""))
+      expect(googleBody.generationConfig.thinkingConfig.thinkingLevel).toBe(thinking?.toUpperCase())
+    }
+  })
+
+  test("setup rejects invalid option equivalence classes with exact messages", async () => {
+    const cases: [object, string, string][] = [
+      [{ openai: [] }, "openai", "an object"],
+      [{ google: "" }, "google", "an object"],
+      ...["", "x".repeat(101), 7].map((model): [object, string, string] =>
+        [{ openai: { model } }, "openai.model", "a non-empty string of at most 100 characters"]),
+      [{ google: { model: false } }, "google.model", "a non-empty string of at most 100 characters"],
+      ...["high", "xhigh", "max", 1].map((reasoningEffort): [object, string, string] =>
+        [{ openai: { reasoningEffort } }, "openai.reasoningEffort", 'one of "none", "minimal", "low", or "medium"']),
+      ...["high", false].map((thinkingLevel): [object, string, string] =>
+        [{ google: { thinkingLevel } }, "google.thinkingLevel", 'one of "minimal", "low", or "medium"']),
+      [{ openai: { searchContextSize: "huge" } }, "openai.searchContextSize", 'one of "low", "medium", or "high"'],
+      [{ google: { searchTimeRange: "today" } }, "google.searchTimeRange", 'one of "any", "lastDay", "lastWeek", "lastMonth", or "lastYear"'],
+      [{ openai: { userLocation: "London" } }, "openai.userLocation", "an object with optional string fields city, country, region, or timezone"],
+      [{ openai: { userLocation: { zip: "" } } }, "openai.userLocation.zip", "a key from city, country, region, timezone"],
+      [{ openai: { userLocation: { city: 1 } } }, "openai.userLocation.city", "a string"],
+      ...[99, 120001, 1.5, "1000"].map((timeoutMs): [object, string, string] =>
+        [{ timeoutMs }, "timeoutMs", "an integer from 100 through 120000"]),
+    ]
+
+    for (const [options, name, expected] of cases) {
+      await expect(createHost(undefined, options)).rejects.toMatchObject({
+        message: `Invalid plugin option ${name}; expected ${expected}.`,
+      })
+    }
+  }, 30_000)
+})
+
+describe("host credential resolution", () => {
+  test("legacy Codex methods keep their fixed origin and legacy-only headers", async () => {
+    // A trusted test CA and CONNECT proxy run only in fixture subprocesses.
+    // No production endpoint override, global fetch patch, or TLS bypass.
+    const cache = join(import.meta.dir, ".cache")
+    mkdirSync(cache, { recursive: true })
+    const directory = mkdtempSync(join(cache, "legacy-tls-"))
+    cleanup(() => rmSync(directory, { recursive: true, force: true }))
+    const key = join(directory, "key.pem")
+    const cert = join(directory, "cert.pem")
+
+    const certificate = Bun.spawnSync([
+      "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=chatgpt.com",
+      "-addext", "subjectAltName=DNS:chatgpt.com",
+    ], { stdout: "pipe", stderr: "pipe" })
+
+    expect(certificate.exitCode).toBe(0)
+    const received: { path: string; authorization: string | null; originator: string | null; account: string | null }[] = []
+
+    const upstream = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      tls: { key: Bun.file(key), cert: Bun.file(cert) },
+      fetch(request) {
+        received.push({
+          path: new URL(request.url).pathname,
+          authorization: request.headers.get("authorization"),
+          originator: request.headers.get("originator"),
+          account: request.headers.get("chatgpt-account-id"),
+        })
+
+        return Response.json({ error: { message: "echo legacy-fixture-access" } }, { status: 401 })
       },
     })
 
-    expect(config.openai.reasoningEffort).toBe("max")
-    expect(config.openai.searchContextSize).toBe("high")
-    expect(config.openai.userLocation).toEqual({ city: "London", country: "GB", region: "England", timezone: "Europe/London" })
-    expect(config.google.thinkingLevel).toBe("low")
-    expect(config.google.searchTimeRange).toBe("lastYear")
-    expect(config.timeoutMs).toBe(30_000)
-  })
+    cleanup(() => upstream.stop(true))
+    const destinations: (string | undefined)[] = []
+    const proxy = createServer()
+    proxy.on("connect", (request, client, head) => {
+      destinations.push(request.url)
 
-  test("rejects invalid option values with a precise message", () => {
-    expect(() => parseConfig({ openai: { model: "" } })).toThrow(/Invalid plugin option openai\.model; expected a non-empty string of at most 100 characters/)
-    expect(() => parseConfig({ openai: { model: "x".repeat(101) } })).toThrow(/Invalid plugin option openai\.model/)
-    expect(() => parseConfig({ openai: { reasoningEffort: "turbo" } })).toThrow(/Invalid plugin option openai\.reasoningEffort/)
-    expect(() => parseConfig({ openai: { searchContextSize: "ultra" } })).toThrow(/Invalid plugin option openai\.searchContextSize/)
-    expect(() => parseConfig({ google: { model: 42 } })).toThrow(/Invalid plugin option google\.model/)
-    expect(() => parseConfig({ google: { thinkingLevel: "extreme" } })).toThrow(/Invalid plugin option google\.thinkingLevel/)
-    expect(() => parseConfig({ google: { searchTimeRange: "yesterday" } })).toThrow(/Invalid plugin option google\.searchTimeRange/)
-    expect(() => parseConfig({ timeoutMs: 50 })).toThrow(/Invalid plugin option timeoutMs; expected an integer from 100 through 120000/)
-    expect(() => parseConfig({ timeoutMs: 1.5 })).toThrow(/Invalid plugin option timeoutMs/)
-    expect(() => parseConfig({ openai: "not-an-object" })).toThrow(/Invalid plugin option openai; expected an object/)
-    expect(() => parseConfig({ google: [] })).toThrow(/Invalid plugin option google; expected an object/)
-    expect(() => parseConfig({ openai: { userLocation: "London" } })).toThrow(/Invalid plugin option openai\.userLocation/)
-    expect(() => parseConfig({ openai: { userLocation: { city: 7 } } })).toThrow(/Invalid plugin option openai\.userLocation\.city/)
-    expect(() => parseConfig({ openai: { userLocation: { zip: "12345" } } })).toThrow(/Invalid plugin option openai\.userLocation\.zip/)
-  })
+      const socket = connect(Number(upstream.port), "127.0.0.1", () => {
+        client.write("HTTP/1.1 200 Connection Established\r\n\r\n")
+        socket.write(head)
+        client.pipe(socket)
+        socket.pipe(client)
+      })
 
-  test("computes correct timeRangeFilter windows for each range choice", () => {
-    const now = new Date("2026-08-09T12:34:56.789Z")
-    const lastDay = timeRangeFilterFor("lastDay", now)
-    expect(lastDay).toEqual({ startTime: "2026-08-08T12:34:56Z", endTime: "2026-08-09T12:34:56Z" })
-    const lastWeek = timeRangeFilterFor("lastWeek", now)
-    expect(lastWeek).toEqual({ startTime: "2026-08-02T12:34:56Z", endTime: "2026-08-09T12:34:56Z" })
-    const lastMonth = timeRangeFilterFor("lastMonth", now)
-    expect(lastMonth).toEqual({ startTime: "2026-07-09T12:34:56Z", endTime: "2026-08-09T12:34:56Z" })
-    const lastYear = timeRangeFilterFor("lastYear", now)
-    expect(lastYear).toEqual({ startTime: "2025-08-09T12:34:56Z", endTime: "2026-08-09T12:34:56Z" })
-    expect(() => timeRangeFilterFor("any", now)).toThrow(/Invalid searchTimeRange any/)
-  })
+      socket.on("error", () => client.destroy())
+      client.on("error", () => socket.destroy())
+      client.on("close", () => socket.destroy())
+      socket.on("close", () => client.destroy())
+    })
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve))
+    cleanup(() => { proxy.closeAllConnections(); proxy.close() })
+    const address = proxy.address()
 
-  test("omits timeRangeFilter for searchTimeRange any and user_location when not configured", async () => {
-    const fetchSpy = mockFetch((url) => jsonResponse(url.includes("generativelanguage.googleapis.com") ? { candidates: [] } : { output: [] }))
-    await openaiResults(defaultConfig, keyCredential)
-    await googleResults(defaultConfig, keyCredential)
-    const openaiInit = fetchSpy.mock.calls[0]![1]!
-    const googleInit = fetchSpy.mock.calls[1]![1]!
-    const openaiBody = bodyOf<OpenAIRequestBody>(openaiInit)
-    const tool = openaiBody.tools[0]!
-    expect(tool.user_location).toBeUndefined()
-    expect(openaiBody.instructions).toBeUndefined()
-    const googleBody = bodyOf<GoogleRequestBody>(googleInit)
-    const googleTool = googleBody.tools[0]!
-    expect(googleTool.googleSearch).toEqual({})
-  })
-})
-
-describe("authentication", () => {
-  test("resolves the active connection for every execution with the right integration IDs", async () => {
-    const active = vi.fn(async () => ({ type: "credential", id: "cred_1" }))
-    const resolve = vi.fn(async () => keyCredential)
-    mockFetch((url) => jsonResponse(url.includes("generativelanguage.googleapis.com") ? { candidates: [] } : { output: [] }))
-    const ctx = connectionCtx(active, resolve)
-    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
-    await searchGoogle(ctx, defaultConfig.google, defaultConfig.timeoutMs, "q", new AbortController().signal)
-    expect(active).toHaveBeenNthCalledWith(1, "openai")
-    expect(active).toHaveBeenNthCalledWith(2, "google")
-    expect(resolve).toHaveBeenCalledTimes(2)
-  })
-
-  test("resolves both credential and env connection types without branching on connection type", async () => {
-    const active = vi
-      .fn()
-      .mockResolvedValueOnce({ type: "credential", id: "cred_1", label: "API key" })
-      .mockResolvedValueOnce({ type: "env", name: "OPENAI_API_KEY" })
-
-    const resolve = vi.fn(async () => keyCredential)
-    mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    const ctx = connectionCtx(active, resolve)
-    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
-    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
-    expect(resolve).toHaveBeenCalledTimes(2)
-    expect(resolve).toHaveBeenCalledWith({ type: "credential", id: "cred_1", label: "API key" })
-    expect(resolve).toHaveBeenCalledWith({ type: "env", name: "OPENAI_API_KEY" })
-  })
-
-  test("falls back to provider catalog settings when no active integration connection exists", async () => {
-    const ctx = providerCtx({ connection: undefined, credential: undefined }, { apiKey: "catalog-api-key" })
-    const credential = await resolveCredential(ctx, "google")
-    expect(credential).toEqual({ type: "key", key: "catalog-api-key" })
-  })
-
-  test("reads credentials and base URL from the current provider domain", async () => {
-    const ctx = {
-      integration: {
-        connection: {
-          active: async () => undefined,
-          resolve: async () => undefined,
-        },
-      },
-      provider: {
-        get: async () => ({
-          data: {
-            settings: {
-              apiKey: "provider-api-key",
-              baseURL: "https://example.com/google/v1beta",
-            },
-          },
-        }),
-      },
+    if (!address || Object.prototype.toString.call(address) === "[object String]") {
+      throw new Error("Expected loopback proxy address")
     }
 
-    const fetchSpy = mockFetch((_url, _init) =>
-      sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]),
-    )
+    // SAFETY: listen uses an IP host, so address is an AddressInfo, not a pipe path.
+    const proxyPort = (address as import("node:net").AddressInfo).port
 
-    // SAFETY: the test double implements the integration and provider surfaces
-    // that searchGoogle uses.
-    await searchGoogle(ctx as never, defaultConfig.google, defaultConfig.timeoutMs, "q", new AbortController().signal)
+    for (const method of ["chatgpt-browser", "chatgpt-headless"]) {
+      const child = Bun.spawn([process.execPath, "tests/legacy-runner.ts", method], {
+        cwd: import.meta.dir,
+        env: {
+          ...process.env,
+          HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
+          https_proxy: `http://127.0.0.1:${proxyPort}`,
+          NO_PROXY: "", no_proxy: "",
+          NODE_EXTRA_CA_CERTS: cert,
+        },
+        stdout: "pipe", stderr: "pipe",
+      })
 
-    expect(String(fetchSpy.mock.calls[0]![0])).toBe(
-      "https://example.com/google/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
-    )
-    expect(headersOf(fetchSpy.mock.calls[0]![1]!)["x-goog-api-key"]).toBe("provider-api-key")
-  })
+      cleanup(() => { child.kill() })
 
-  test("throws a precise error when no active connection exists", async () => {
-    const ctx = connectionCtx(async () => undefined, async () => undefined)
-    await expect(resolveCredential(ctx, "openai")).rejects.toThrow(/No active openai connection/)
-    await expect(resolveCredential(ctx, "google")).rejects.toThrow(/No active google connection/)
-  })
+      const [status, stdout, stderr] = await Promise.all([
+        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+      ])
 
-  test("throws when credentials cannot be resolved or resolution fails", async () => {
-    const unresolved = connectionCtx(async () => ({}), async () => undefined)
-    await expect(resolveCredential(unresolved, "openai")).rejects.toThrow(/Unable to resolve openai credentials/)
+      expect({ status, stdout: stdout.trim(), stderr: stderr.trim() }).toEqual({
+        status: 0, stdout: "legacy-ok", stderr: "",
+      })
+    }
 
-    const failing = connectionCtx(
-      async () => ({}),
-      async () => {
-        throw new Error("refresh failed")
-      },
-    )
-
-    await expect(resolveCredential(failing, "google")).rejects.toThrow(/Unable to resolve google credentials/)
-  })
-
-  test("rejects unsupported credential types", async () => {
-    const unsupported = { type: "ssh", key: "nope" }
-    await expect(openaiResults(defaultConfig, unsupported)).rejects.toThrow(/Unsupported OpenAI credential type/)
-    await expect(googleResults(defaultConfig, unsupported)).rejects.toThrow(/Unsupported Google credential type/)
-    await expect(googleResults(defaultConfig, oauthCredential)).rejects.toThrow(/Unsupported Google credential type/)
-  })
-
-  test("never exposes credential values in errors", async () => {
-    const upstreamCredential = "gateway-secret-789"
-    const providerMessage = `Authorization: Bearer ${keyCredential.key}; {"api_key":"${upstreamCredential}"}`
-    mockFetch((_url, _init) => jsonResponse({ error: { message: providerMessage } }, 401))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(
-      /OpenAI web search failed \(HTTP 401\): Authorization: \[REDACTED\]; {"api_key":\[REDACTED\]}/,
-    )
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(upstreamCredential)
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(
-      /Gemini web search failed \(HTTP 401\): Authorization: \[REDACTED\]; {"api_key":\[REDACTED\]}/,
-    )
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.not.toThrow(upstreamCredential)
-  })
-
-  test("picks up a changed active connection on the next execution", async () => {
-    let current: JsonValue = keyCredential
-    const ctx = connectionCtx(async () => ({}), async () => current)
-    const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
-    current = oauthCredential
-    await searchOpenAI(ctx, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal)
-    const urls = fetchSpy.mock.calls.map((call) => String(call[0]))
-    expect(urls).toEqual([
-      "https://api.openai.com/v1/responses",
-      "https://chatgpt.com/backend-api/codex/responses",
+    expect(destinations).toEqual(["chatgpt.com:443", "chatgpt.com:443"])
+    expect(received).toEqual([
+      { path: "/backend-api/codex/responses", authorization: "Bearer legacy-fixture-access", originator: "opencode", account: "fixture-account" },
+      { path: "/backend-api/codex/responses", authorization: "Bearer legacy-fixture-access", originator: "opencode", account: null },
     ])
+  }, 20_000)
+
+  test("settings fallback, active connection switches, and token-sharing routing stay request-scoped", async () => {
+    const received: (string | null)[] = []
+
+    const origin = serve((request) => {
+      expect(new URL(request.url).pathname).toBe("/responses")
+      expect(request.headers.get("originator")).toBeNull()
+      expect(request.headers.get("chatgpt-account-id")).toBeNull()
+      received.push(request.headers.get("authorization"))
+
+      return empty()
+    })
+
+    const host = await createHost(`${origin}///`)
+    cleanup(host.close)
+    await host.query("openai")
+    await host.credential("openai", { type: "key", key: "active-key" })
+    await host.query("openai")
+    await host.credential("openai", {
+      type: "oauth",
+      methodID: "chatgpt-token-sharing",
+      access: "sharing-access",
+      refresh: "sharing-refresh",
+      expires: Date.now() + 3600_000,
+      metadata: { accountID: "must-not-send" },
+    })
+    await host.query("openai")
+    expect(received).toEqual([`Bearer ${fakeKey}`, "Bearer active-key", "Bearer sharing-access"])
+  })
+
+  test("unsupported credentials and failed settings never send an authenticated request", async () => {
+    let received = 0
+
+    const origin = serve(() => {
+      received++
+
+      return empty()
+    })
+
+    const host = await createHost(origin)
+    cleanup(host.close)
+    await host.credential("openai", { type: "external", methodID: "external" })
+    expect((await host.failureCause("openai")).message).toBe("Unsupported OpenAI credential type")
+    await host.credential("openai", {
+      type: "oauth", methodID: "unknown", access: fakeKey, refresh: "refresh", expires: Date.now() + 3600_000,
+    })
+    expect((await host.failureCause("openai")).message).toStartWith("Unsupported OpenAI OAuth method")
+    await host.credential("google", {
+      type: "oauth", methodID: "oauth", access: fakeKey, refresh: "refresh", expires: Date.now() + 3600_000,
+    })
+    expect((await host.failureCause("google")).message).toBe("Unsupported Google credential type; expected a key credential")
+    await host.credential("openai", { type: "key", key: fakeKey })
+    host.failSettings()
+    expect((await host.failureCause("openai")).message).toBe("Unable to read openai provider settings. Try again.")
+    const missing = await createHost(origin, {}, new Map([["openai", {}], ["google", {}]]))
+    cleanup(missing.close)
+
+    for (const provider of ["openai", "google"]) {
+      expect((await missing.failureCause(provider)).message).toBe(
+        `No active ${provider} connection. Connect the ${provider} integration in OpenCode first.`,
+      )
+    }
+
+    expect(received).toBe(0)
   })
 })
 
-describe("openai", () => {
-  test("sends the configured model and web_search tool without an allowlist", async () => {
-    const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    await openaiResults(fullConfig, keyCredential)
-    const [url, init] = fetchSpy.mock.calls[0]!
-    expect(String(url)).toBe("https://api.openai.com/v1/responses")
-    const body = bodyOf<OpenAIRequestBody>(init!)
-    expect(body.model).toBe("gpt-custom-model")
-    expect(body.store).toBe(false)
-    expect(body.stream).toBe(true)
-    expect(body.include).toContain("web_search_call.action.sources")
-    const tool = body.tools[0]!
-    expect(tool.type).toBe("web_search")
-    expect(tool.search_context_size).toBe("high")
-    expect(tool.external_web_access).toBe(true)
-    expect(tool.user_location).toEqual({ type: "approximate", city: "London", country: "GB" })
-    expect(body.reasoning).toEqual({ effort: "high" })
-  })
-
-  test("uses the public endpoint with a Bearer key and no originator for key credentials", async () => {
-    const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    await openaiResults(defaultConfig, keyCredential)
-    const [url, init] = fetchSpy.mock.calls[0]!
-    expect(String(url)).toBe("https://api.openai.com/v1/responses")
-    const headers = headersOf(init!)
-    expect(headers.Authorization).toBe("Bearer sk-test-secret-key-123")
-    expect(headers.originator).toBeUndefined()
-    expect(headers["chatgpt-account-id"]).toBeUndefined()
-    const body = bodyOf<OpenAIRequestBody>(init!)
-    expect(body.instructions).toBeUndefined()
-  })
-
-  test("uses the provider settings baseURL for key credentials when configured", async () => {
-    const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    await searchOpenAI(
-      providerCtx({ connection: {}, credential: keyCredential }, { baseURL: "https://example.com/openai/v1" }),
-      defaultConfig.openai,
-      defaultConfig.timeoutMs,
-      "q",
-      new AbortController().signal,
-    )
-    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://example.com/openai/v1/responses")
-  })
-
-  test("keeps the codex endpoint for OAuth even when a baseURL is configured", async () => {
-    const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    await searchOpenAI(
-      providerCtx({ connection: {}, credential: oauthCredential }, { baseURL: "https://example.com/openai/v1" }),
-      defaultConfig.openai,
-      defaultConfig.timeoutMs,
-      "q",
-      new AbortController().signal,
-    )
-    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://chatgpt.com/backend-api/codex/responses")
-  })
-
-  test("does not send credentials when provider settings cannot be read", async () => {
-    const ctx = {
-      integration: {
-        connection: {
-          active: async () => ({}),
-          resolve: async () => keyCredential,
-        },
-      },
-      catalog: {
-        provider: {
-          get: async () => {
-            throw new Error("catalog unavailable")
-          },
-        },
-      },
-    }
-
-    const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    // SAFETY: test double for the plugin context. catalog.provider.get throws
-    // before the provider can select a safe request endpoint.
-    await expect(
-      searchOpenAI(ctx as never, defaultConfig.openai, defaultConfig.timeoutMs, "q", new AbortController().signal),
-    ).rejects.toThrow(/Unable to read openai provider settings/)
-    expect(fetchSpy).not.toHaveBeenCalled()
-  })
-
-  test("uses the codex endpoint with originator and account headers for OAuth credentials", async () => {
-    const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    await openaiResults(defaultConfig, oauthCredential)
-    const [url, init] = fetchSpy.mock.calls[0]!
-    expect(String(url)).toBe("https://chatgpt.com/backend-api/codex/responses")
-    const headers = headersOf(init!)
-    expect(headers.Authorization).toBe("Bearer access-token-456")
-    expect(headers.originator).toBe("opencode")
-    expect(headers["chatgpt-account-id"]).toBe("acc-1001")
-    const body = bodyOf<OpenAIRequestBody>(init!)
-    expect(body.instructions).toBeUndefined()
-  })
-
-  test("reads chatgpt-account-id from both accountID and accountId metadata keys", async () => {
-    for (const key of ["accountID", "accountId"] as const) {
-      const auth = { ...oauthCredential, metadata: { [key]: "acc-2002" } }
-      const fetchSpy = mockFetch((_url, _init) => jsonResponse({ output: [] }))
-      await openaiResults(defaultConfig, auth)
-      const headers = headersOf(fetchSpy.mock.calls[0]![1]!)
-      expect(headers["chatgpt-account-id"]).toBe("acc-2002")
-      vi.restoreAllMocks()
-    }
-  })
-
-  test("normalizes annotations and action sources, deduplicates URLs and spans", async () => {
+describe("framing and normalized host results", () => {
+  test("OpenAI multiline SSE, CR/LF/CRLF, split UTF-8, citations, and action sources render safely", async () => {
     const output = [
-      {
-        type: "message",
-        role: "assistant",
-        content: [
-          {
-            type: "output_text",
-            text: "Alpha system is interesting and Beta system is not.",
-            annotations: [
-              { type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com/alpha", title: "Alpha Paper" },
-              { type: "url_citation", start_index: 31, end_index: 35, url: "https://example.com/beta", title: "Beta Paper" },
-              { type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com/alpha", title: "Alpha Paper" },
-              { type: "url_citation", start_index: 26, end_index: 31, url: "https://example.com/alpha", title: "Alpha Paper" },
-            ],
-          },
+      { type: "message", content: [{
+        type: "output_text", text: "Café facts",
+        annotations: [
+          { type: "url_citation", url: "https://example.com/a", title: "A", start_index: 0, end_index: 4, published: 8.64e15 },
+          { type: "url_citation", url: "https://example.com/a", start_index: 0, end_index: 4 },
+          { type: "url_citation", url: "javascript:alert(1)", start_index: 0, end_index: 4 },
         ],
-      },
-      {
-        type: "web_search_call",
-        id: "ws_1",
-        action: {
-          sources: [
-            { type: "url", url: "https://example.com/alpha", title: "Alpha Paper" },
-            { type: "url", url: "https://example.com/gamma", title: "Gamma Doc" },
-          ],
-        },
-      },
+      }] },
+      { type: "web_search_call", action: { sources: [
+        { type: "url", url: "http://example.com/b", published: -8.64e15 },
+        { type: "url", url: "https://example.com/c", published: 8.64e15 + 1 },
+        { type: "url", url: "https://example.com/d", published: -8.64e15 - 1 },
+        { type: "url", url: "https://example.com/e", published_date: "2026-01-02" },
+        { type: "url", url: "not a url" },
+        { type: "url", url: "file:///etc/passwd" },
+      ] } },
     ]
 
-    const results = normalizeOutput(output)
-    expect(results).toEqual([
-      {
-        url: "https://example.com/alpha",
-        title: "Alpha Paper",
-        content: "Alpha g and",
-        time: {},
+    const frame = `: comment\r\nevent: ignored\r\ndata: {"type":"response.completed",\rdata: "response":${JSON.stringify({ output })}}\r\r`
+    const bytes = new TextEncoder().encode(frame)
+    const split = bytes.indexOf(0xc3) + 1
+
+    const origin = serve(() => new Response(new ReadableStream({
+      async start(controller) {
+        controller.enqueue(bytes.slice(0, split))
+        await Bun.sleep(10)
+        controller.enqueue(bytes.slice(split))
+        controller.close()
       },
-      {
-        url: "https://example.com/beta",
-        title: "Beta Paper",
-        content: " Bet",
-        time: {},
-      },
-      {
-        url: "https://example.com/gamma",
-        title: "Gamma Doc",
-        time: {},
-      },
-    ])
-  })
+    }), { headers: { "Content-Type": "text/event-stream" } }))
 
-  test("handles out-of-range annotation indices without throwing", () => {
-    const output = [
-      {
-        type: "message",
-        role: "assistant",
-        content: [
-          {
-            type: "output_text",
-            text: "short",
-            annotations: [
-              { type: "url_citation", start_index: -5, end_index: 999, url: "https://example.com/short", title: "Short" },
-            ],
-          },
-        ],
-      },
-    ]
-
-    const results = normalizeOutput(output)
-    expect(results).toEqual([
-      { url: "https://example.com/short", title: "Short", content: "short", time: {} },
-    ])
-  })
-
-  test("rejects malformed and unsuccessful responses", async () => {
-    mockFetch((_url, _init) => jsonResponse({ error: { message: "Invalid API key" } }, 401))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/OpenAI web search failed \(HTTP 401\): Invalid API key/)
-
-    mockFetch((_url, _init) => jsonResponse("not json at all", 502, "text/plain"))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/OpenAI web search failed \(HTTP 502\)/)
-  })
-
-  test("parses the SSE stream via output_item.done events", async () => {
-    const events = [
-      JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } }),
-      JSON.stringify({
-        type: "response.output_item.done",
-        output_index: 0,
-        item: {
-          type: "message",
-          role: "assistant",
-          content: [
-            {
-              type: "output_text",
-              text: "Alpha system is interesting and Beta system is not.",
-              annotations: [
-                { type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com/alpha", title: "Alpha Paper" },
-                { type: "url_citation", start_index: 31, end_index: 35, url: "https://example.com/beta", title: "Beta Paper" },
-              ],
-            },
-          ],
-        },
-      }),
-      JSON.stringify({
-        type: "response.output_item.done",
-        output_index: 1,
-        item: {
-          type: "web_search_call",
-          id: "ws_1",
-          action: { sources: [{ type: "url", url: "https://example.com/gamma", title: "Gamma Doc" }] },
-        },
-      }),
-      JSON.stringify({ type: "response.completed", response: { id: "resp_1", output: [] } }),
-      "[DONE]",
-    ]
-
-    mockFetch((_url, _init) => sseResponse(events))
-    const results = await openaiResults(defaultConfig, keyCredential)
-    expect(results.map((result) => result.url)).toEqual([
-      "https://example.com/alpha",
-      "https://example.com/beta",
-      "https://example.com/gamma",
-    ])
-    expect(results[0]!.content).toBe("Alpha")
-  })
-
-  test("falls back to the completed event output when no output_item.done events arrive", async () => {
-    const events = [
-      JSON.stringify({
-        type: "response.completed",
-        response: {
-          id: "resp_1",
-          output: [
-            {
-              type: "message",
-              role: "assistant",
-              content: [
-                {
-                  type: "output_text",
-                  text: "Alpha system is interesting.",
-                  annotations: [{ type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com/alpha", title: "Alpha" }],
-                },
-              ],
-            },
-          ],
-        },
-      }),
-    ]
-
-    mockFetch((_url, _init) => sseResponse(events))
-    const results = await openaiResults(defaultConfig, keyCredential)
-    expect(results).toEqual([{ url: "https://example.com/alpha", title: "Alpha", content: "Alpha", time: {} }])
-  })
-
-  test("accepts a non-SSE JSON response as a fallback", async () => {
-    mockFetch((_url, _init) =>
-      jsonResponse({
-        id: "resp_1",
-        output: [
-          {
-            type: "web_search_call",
-            id: "ws_1",
-            action: { sources: [{ type: "url", url: "https://example.com/alpha", title: "Alpha" }] },
-          },
-        ],
-      }),
-    )
-    const results = await openaiResults(defaultConfig, keyCredential)
-    expect(results).toEqual([{ url: "https://example.com/alpha", title: "Alpha", time: {} }])
-  })
-
-  test("throws on a failed SSE event", async () => {
-    const events = [
-      JSON.stringify({
-        type: "response.failed",
-        response: { error: { message: `server echoed ${keyCredential.key}` } },
-      }),
-    ]
-
-    mockFetch((_url, _init) => sseResponse(events))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(
-      /OpenAI web search failed: server echoed \[REDACTED\]/,
-    )
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
-  })
-
-  test("throws on a top-level stream error event", async () => {
-    const events = [
-      JSON.stringify({
-        type: "error",
-        error: { message: `server echoed ${keyCredential.key}` },
-      }),
-    ]
-
-    mockFetch((_url, _init) => sseResponse(events))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(
-      /OpenAI web search failed: server echoed \[REDACTED\]/,
-    )
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
-  })
-
-  test("rejects a stream that ends before a terminal event", async () => {
-    const events = [
-      JSON.stringify({
-        type: "response.output_item.done",
-        output_index: 0,
-        item: {
-          type: "web_search_call",
-          id: "ws_1",
-          action: { sources: [{ type: "url", url: "https://example.com/partial" }] },
-        },
-      }),
-    ]
-
-    mockFetch((_url, _init) => sseResponse(events))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/stream ended without a terminal event/)
-  })
-
-  test("throws on malformed stream events", async () => {
-    mockFetch((_url, _init) => sseResponse(["this is not json"]))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/malformed stream event/)
-  })
-})
-
-describe("gemini", () => {
-  test("sends the configured model, googleSearch tool, and uppercase thinking level", async () => {
-    const fetchSpy = mockFetch((_url, _init) => sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]))
-    await googleResults(fullConfig, keyCredential)
-    const [url, init] = fetchSpy.mock.calls[0]!
-    expect(String(url)).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-custom-model:streamGenerateContent?alt=sse",
-    )
-    const headers = headersOf(init!)
-    expect(headers["x-goog-api-key"]).toBe("sk-test-secret-key-123")
-    const body = bodyOf<GoogleRequestBody>(init!)
-    expect(body.contents).toEqual([{ role: "user", parts: [{ text: "what is the weather" }] }])
-    const tool = body.tools[0]!
-    expect(tool.googleSearch).toBeDefined()
-    const timeRange = tool.googleSearch.timeRangeFilter!
-    expect(timeRange.startTime).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
-    expect(timeRange.endTime).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
-    expect(body.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "HIGH" })
-  })
-
-  test("uses the provider settings baseURL for Gemini when configured", async () => {
-    const fetchSpy = mockFetch((_url, _init) => sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]))
-    await searchGoogle(
-      providerCtx({ connection: {}, credential: keyCredential }, { baseURL: "https://example.com/google/v1beta" }),
-      defaultConfig.google,
-      defaultConfig.timeoutMs,
-      "q",
-      new AbortController().signal,
-    )
-    expect(String(fetchSpy.mock.calls[0]![0])).toBe(
-      "https://example.com/google/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
-    )
-  })
-
-  test("maps every thinking level to its uppercase wire enum", async () => {
-    const levels: Array<[ThinkingLevel, string]> = [
-      ["minimal", "MINIMAL"],
-      ["low", "LOW"],
-      ["medium", "MEDIUM"],
-      ["high", "HIGH"],
-    ]
-
-    for (const [option, wire] of levels) {
-      const fetchSpy = mockFetch((_url, _init) => sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })]))
-      const config = { ...defaultConfig, google: { ...defaultConfig.google, thinkingLevel: option } }
-      await googleResults(config, keyCredential)
-      const body = bodyOf<GoogleRequestBody>(fetchSpy.mock.calls[0]![1]!)
-      expect(body.generationConfig.thinkingConfig).toEqual({ thinkingLevel: wire })
-      vi.restoreAllMocks()
-    }
-  })
-
-  test("extracts URIs and titles from grounding chunks and aggregates supported segments", () => {
-    const merged = {
-      parts: ["Alpha facts are here and Beta details too."],
-      finishReason: "STOP",
-      grounding: {
-        groundingChunks: [
-          { web: { uri: "https://example.com/alpha", title: "Alpha Facts" } },
-          { web: { uri: "https://example.com/beta", title: "Beta Details" } },
-          { web: { uri: "https://example.com/gamma", title: "Gamma Uncited" } },
-        ],
-        groundingSupports: [
-          { segment: { startIndex: 0, endIndex: 10 }, groundingChunkIndices: [0] },
-          { segment: { startIndex: 21, endIndex: 34 }, groundingChunkIndices: [1, 0] },
-        ],
-      },
-    }
-
-    // SAFETY: fixture mirrors the merged stream shape normalizeGenerateContent consumes.
-    const results = normalizeGenerateContent(merged as never)
-    expect(results).toEqual([
-      {
-        url: "https://example.com/alpha",
-        title: "Alpha Facts",
-        content: "Alpha fact and Beta deta",
-        time: {},
-      },
-      {
-        url: "https://example.com/beta",
-        title: "Beta Details",
-        content: "and Beta deta",
-        time: {},
-      },
-      {
-        url: "https://example.com/gamma",
-        title: "Gamma Uncited",
-        time: {},
-      },
-    ])
-  })
-
-  test("merges text and grounding across streamed chunks", async () => {
-    const chunk1 = { candidates: [{ content: { parts: [{ text: "Alpha facts are here" }] } }] }
-
-    const chunk2 = {
-      candidates: [
-        {
-          content: { parts: [{ text: " and Beta details too." }] },
-          finishReason: "STOP",
-          groundingMetadata: {
-            groundingChunks: [{ web: { uri: "https://example.com/alpha", title: "Alpha Facts" } }],
-            groundingSupports: [{ segment: { startIndex: 0, endIndex: 10 }, groundingChunkIndices: [0] }],
-          },
-        },
+    const host = await createHost(origin)
+    cleanup(host.close)
+    const rendered = await host.render("openai")
+    expect(rendered.output).toEqual({
+      provider: "openai",
+      results: [
+        { url: "https://example.com/a", title: "A", content: "Café", time: { published: 8.64e15 } },
+        { url: "http://example.com/b", time: { published: -8.64e15 } },
+        { url: "https://example.com/c", time: {} },
+        { url: "https://example.com/d", time: {} },
+        { url: "https://example.com/e", time: { published: 1767312000000 } },
       ],
-    }
+    })
+    expect(rendered.content).toContain("+275760-09-13T00:00:00.000Z")
+    expect(rendered.content).toContain("-271821-04-20T00:00:00.000Z")
+  })
 
-    mockFetch((_url, _init) => sseResponse([JSON.stringify(chunk1), JSON.stringify(chunk2)]))
-    const results = await googleResults(defaultConfig, keyCredential)
-    expect(results).toEqual([
-      { url: "https://example.com/alpha", title: "Alpha Facts", content: "Alpha fact", time: {} },
+  test("Gemini appends global chunk indices and supports before deduplicating URLs across multiple parts", async () => {
+    const origin = serve(() => sse([
+      JSON.stringify({ candidates: [{
+        content: { parts: [{ text: "Café" }, { text: "Beta" }] },
+        groundingMetadata: {
+          groundingChunks: [{ web: { uri: "https://example.com/a?keep=%2f", title: "A" } }],
+          groundingSupports: [{ segment: { endIndex: 5 }, groundingChunkIndices: [0] }],
+        },
+      }] }),
+      JSON.stringify({ candidates: [{
+        content: { parts: [{ text: " facts" }, { text: " details" }] },
+        groundingMetadata: {
+          groundingChunks: [
+            { web: { uri: "https://example.com/a?keep=%2f", title: "Duplicate" } },
+            { web: { uri: "https://example.com/b", title: "B", published: 1e20 } },
+            { web: { uri: "data:text/plain,invalid" } },
+          ],
+          groundingSupports: [
+            { segment: { startIndex: 6, endIndex: 11 }, groundingChunkIndices: [1, 2] },
+            { segment: { partIndex: 1, endIndex: 4 }, groundingChunkIndices: [2] },
+          ],
+        },
+        finishReason: "STOP",
+      }] }),
+    ]))
+
+    const host = await createHost(origin)
+    cleanup(host.close)
+    expect((await host.query("google")).results).toEqual([
+      { url: "https://example.com/a?keep=%2f", title: "A", content: "Café facts", time: {} },
+      { url: "https://example.com/b", title: "B", content: "facts Beta", time: {} },
     ])
   })
 
-  test("deduplicates repeated URLs across chunks preserving grounding order", () => {
-    const merged = {
-      parts: ["one two"],
-      finishReason: "STOP",
-      grounding: {
-        groundingChunks: [
-          { web: { uri: "https://example.com/a", title: "A" } },
-          { web: { uri: "https://example.com/a", title: "A again" } },
-          { web: { uri: "https://example.com/b", title: "B" } },
-        ],
-        groundingSupports: [
-          { segment: { startIndex: 0, endIndex: 3 }, groundingChunkIndices: [0] },
-          { segment: { startIndex: 0, endIndex: 3 }, groundingChunkIndices: [1] },
-          { segment: { startIndex: 4, endIndex: 7 }, groundingChunkIndices: [2] },
-        ],
-      },
-    }
+  test("JSON fallbacks, item-done streams, and valid ungrounded responses use the host schema", async () => {
+    const replies = [
+      Response.json({ output: [{ type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com" }] } }] }),
+      sse([
+        "[DONE]",
+        JSON.stringify({ type: "response.output_item.done", item: {
+          type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/done" }] },
+        } }),
+        JSON.stringify({ type: "response.completed", response: { output: [] } }),
+      ]),
+      Response.json({ candidates: [{ finishReason: "STOP" }] }),
+      sse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "ungrounded" }] }, finishReason: "STOP" }] })]),
+      Response.json({ output: [] }),
+    ]
 
-    // SAFETY: fixture mirrors the merged stream shape normalizeGenerateContent consumes.
-    const results = normalizeGenerateContent(merged as never)
-    expect(results.map((result) => result.url)).toEqual(["https://example.com/a", "https://example.com/b"])
-    expect(results[0]!.content).toBe("one")
-    expect(results[0]!.title).toBe("A")
-  })
-
-  test("rejects blocked, malformed, and unsuccessful responses", async () => {
-    const blocked = {
-      candidates: [{ content: { parts: [{ text: "nope" }] }, finishReason: "BLOCKED" }],
-    }
-
-    mockFetch((_url, _init) => sseResponse([JSON.stringify(blocked)]))
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/blocked by the provider/)
-
-    mockFetch((_url, _init) => sseResponse([JSON.stringify({ promptFeedback: { blockReason: "PROHIBITED_CONTENT" } })]))
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/prompt block reason PROHIBITED_CONTENT/)
-
-    mockFetch((_url, _init) =>
-      sseResponse([JSON.stringify({ candidates: [{ finishReason: "MALFORMED_RESPONSE" }] })]),
-    )
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/failed \(finish reason MALFORMED_RESPONSE\)/)
-
-    mockFetch((_url, _init) => sseResponse([JSON.stringify({ error: "invalid" })]))
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/malformed stream error/)
-
-    mockFetch((_url, _init) => jsonResponse({ error: { message: "API key not valid" } }, 400))
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/Gemini web search failed \(HTTP 400\): API key not valid/)
-
-    mockFetch((_url, _init) =>
-      sseResponse([JSON.stringify({ error: { message: `stream echoed ${keyCredential.key}` } })]),
-    )
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(
-      /Gemini web search failed: stream echoed \[REDACTED\]/,
-    )
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.not.toThrow(keyCredential.key)
+    const origin = serve(() => replies.shift() ?? empty())
+    const host = await createHost(origin)
+    cleanup(host.close)
+    expect((await host.query("openai")).results).toEqual([{ url: "https://example.com", time: {} }])
+    expect((await host.query("openai")).results).toEqual([{ url: "https://example.com/done", time: {} }])
+    expect((await host.query("google")).results).toEqual([])
+    expect((await host.query("google")).results).toEqual([])
+    expect((await host.render("openai")).content).toBe("No search results found. Please try a different query.")
   })
 })
 
-describe("runtime contract", () => {
-  test("every result contains url and time and no unsupported fields", async () => {
-    const output = [
-      {
-        type: "message",
-        role: "assistant",
-        content: [
-          {
-            type: "output_text",
-            text: "Alpha system is interesting.",
-            annotations: [{ type: "url_citation", start_index: 0, end_index: 5, url: "https://example.com/alpha", title: "Alpha" }],
-          },
-        ],
-      },
-    ]
+describe("provider failures at the host boundary", () => {
+  test("incomplete, blocked, malformed, and SSE failures reject with redacted diagnostics", async () => {
+    const replies: Response[] = []
+    const origin = serve(() => replies.shift() ?? empty())
+    const host = await createHost(origin)
+    cleanup(host.close)
 
-    mockFetch((_url, _init) => jsonResponse({ output }))
-    const results = await openaiResults(defaultConfig, keyCredential)
-    expect(results.length).toBeGreaterThan(0)
+    for (const reason of ["content_filter", "max_output_tokens", `echo ${fakeKey}`]) {
+      for (const reply of [
+        Response.json({ status: "incomplete", incomplete_details: { reason }, output: [] }),
+        sse([JSON.stringify({ type: "response.incomplete", response: { incomplete_details: { reason }, output: [] } })]),
+      ]) {
+        replies.push(reply)
+        expect((await host.failureCause("openai")).message).toBe(`OpenAI web search incomplete: ${reason.replace(fakeKey, "[REDACTED]")}`)
+      }
+    }
 
-    for (const result of results) {
-      expect(result.url.length).toBeGreaterThan(0)
-      expect(result.time).toBeDefined()
-      expect(Object.keys(result).sort()).toEqual(["content", "time", "title", "url"].sort())
+    for (const reason of ["ESCALATION", "PUP_LIMITED_DISABLED", "SAFETY", "MAX_TOKENS", "CONTINUATION", "OTHER", "IMAGE_OTHER", "MALFORMED_RESPONSE"]) {
+      replies.push(sse([JSON.stringify({ candidates: [{ finishReason: reason }] })]))
+      expect((await host.failureCause("google")).message).toContain(`finish reason ${reason}`)
+    }
+
+    for (const provider of ["openai", "google"]) {
+      for (const reply of [
+        new Response("{not json"),
+        Response.json({}),
+        sse(["not json"]),
+        sse([JSON.stringify({})]),
+        sse([JSON.stringify({ type: "error", error: { message: `authorization: Bearer ${fakeKey}` } })]),
+      ]) {
+        replies.push(reply)
+        const failure = await host.failureCause(provider)
+        expect(String(failure)).not.toContain(fakeKey)
+        expect(String(failure)).toMatch(/not valid JSON|missing output|malformed response envelope|malformed stream event|without a terminal event|REDACTED/)
+      }
     }
   })
 
-  test("OpenCode's abort signal reaches fetch and cancels in-flight requests", async () => {
-    const controller = new AbortController()
-    mockFetch((_url, init) => {
-      const signal = init.signal
+  test("HTTP status errors drive cooldowns and status-specific tool messages without retaining secrets", async () => {
+    let requests = 0
+    let status = 429
 
-      if (!signal) throw new Error("expected an abort signal")
+    const origin = serve(() => {
+      requests++
 
-      if (signal.aborted) return Promise.reject(signal.reason)
-
-      return new Promise((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason))
+      return Response.json({ error: { message: `echo ${fakeKey}` } }, {
+        status,
+        headers: { "retry-after": "60", "x-secret": fakeKey },
       })
     })
 
-    const request = searchOpenAI(
-      providerCtx({ connection: {}, credential: keyCredential }),
-      defaultConfig.openai,
-      defaultConfig.timeoutMs,
-      "q",
-      controller.signal,
-    )
+    const host = await createHost(origin)
+    cleanup(host.close)
+    const failure = await host.failure("openai")
+    expect(failure).toBeInstanceOf(WebSearch.RequestError)
 
-    const reason = new Error("cancelled by opencode")
-    controller.abort(reason)
-    await expect(request).rejects.toThrow("cancelled by opencode")
+    if (!(failure instanceof WebSearch.RequestError) || !HttpClientError.isHttpClientError(failure.cause)) {
+      throw new Error("Expected an Effect HTTP status error from the real host")
+    }
+
+    expect(failure.cause.response?.status).toBe(429)
+    expect(failure.cause.reason._tag).toBe("StatusCodeError")
+    expect(failure.cause.message).toContain("[REDACTED]")
+    expect(JSON.stringify(failure.cause)).not.toContain(fakeKey)
+    expect(Bun.inspect(failure.cause)).not.toContain(fakeKey)
+
+    for (const [code, message] of [
+      [429, "Web search rate limited (HTTP 429)"],
+      [401, "Web search authentication failed (HTTP 401)"],
+      [503, "Web search request failed (HTTP 503)"],
+    ] as const) {
+      status = code
+      await expect(host.render("openai")).rejects.toThrow(message)
+    }
+
+    status = 429
+    await host.selectRandom()
+    await host.failure()
+    const afterCooldown = requests
+    await host.failure()
+    expect(requests).toBe(afterCooldown)
   })
 
-  test("timeout cancellation aborts the fetch signal", async () => {
-    mockFetch((_url, init) => {
-      const signal = init.signal
+  test("redirect rejection never forwards either credential to another origin", async () => {
+    let destinations = 0
 
-      if (!signal) throw new Error("expected an abort signal")
+    const destination = serve(() => {
+      destinations++
 
-      if (signal.aborted) return Promise.reject(signal.reason)
-
-      return new Promise((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason))
-      })
+      return empty()
     })
-    const started = Date.now()
-    await expect(
-      searchOpenAI(
-        providerCtx({ connection: {}, credential: keyCredential }),
-        defaultConfig.openai,
-        100,
-        "q",
-        new AbortController().signal,
-      ),
-    ).rejects.toThrow()
-    expect(Date.now() - started).toBeLessThan(5000)
-  })
 
-  test("provider failures reject rather than being swallowed", async () => {
-    mockFetch((_url, _init) => jsonResponse({ error: { message: "boom" } }, 500))
-    await expect(openaiResults(defaultConfig, keyCredential)).rejects.toThrow(/OpenAI web search failed \(HTTP 500\): boom/)
-    mockFetch((_url, _init) => jsonResponse({ error: { message: "boom" } }, 500))
-    await expect(googleResults(defaultConfig, keyCredential)).rejects.toThrow(/Gemini web search failed \(HTTP 500\): boom/)
-  })
+    const origin = serve(() => Response.redirect(`${destination}/stolen`, 307))
+    const host = await createHost(origin)
+    cleanup(host.close)
 
-  test("valid no-source responses return []", async () => {
-    mockFetch((_url, _init) => jsonResponse({ output: [] }))
-    expect(await openaiResults(defaultConfig, keyCredential)).toEqual([])
-    mockFetch((_url, _init) => sseResponse([JSON.stringify({ candidates: [{ content: { parts: [{ text: "no sources" }] }, finishReason: "STOP" }] })]))
-    expect(await googleResults(defaultConfig, keyCredential)).toEqual([])
+    for (const provider of ["openai", "google"]) await expect(host.query(provider)).rejects.toThrow()
+    expect(destinations).toBe(0)
+  })
+})
+
+describe("real cancellation and timeout", () => {
+  test("pre-abort and request/body barriers cancel both providers", async () => {
+    for (const provider of ["openai", "google"]) {
+      for (const phase of ["pre", "request", "body"]) {
+        const started = barrier()
+        const release = barrier()
+        const disconnected = barrier()
+        let received = 0
+
+        const origin = serve(async (incoming) => {
+          received++
+          incoming.signal.addEventListener("abort", () => disconnected.resolve(), { once: true })
+
+          if (phase === "request") {
+            started.resolve()
+            await release.promise
+
+            return empty()
+          }
+
+          return new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(": body started\n\n"))
+              started.resolve()
+            },
+            cancel() {
+              disconnected.resolve()
+            },
+          }), { headers: { "content-type": "text/event-stream" } })
+        })
+
+        const host = await createHost(origin, { timeoutMs: 1000 })
+        cleanup(host.close)
+        const controller = new AbortController()
+        const reading = barrier()
+        const nativeRead = ReadableStreamDefaultReader.prototype.read
+
+        // Observe entry to the native body reader without replacing fetch,
+        // payloads, sockets, or the read operation.
+        const observer = phase === "body"
+          ? spyOn(ReadableStreamDefaultReader.prototype, "read").mockImplementation(function (this: ReadableStreamDefaultReader) {
+            const pending = nativeRead.call(this)
+            reading.resolve()
+
+            return pending
+          })
+          : undefined
+
+        cleanup(() => observer?.mockRestore())
+
+        if (phase === "pre") controller.abort()
+        const request = host.queryExit(provider, controller.signal)
+
+        if (phase !== "pre") {
+          await (phase === "body" ? reading.promise : started.promise)
+          controller.abort()
+        }
+
+        const exit = await request
+        observer?.mockRestore()
+
+        try {
+          if (phase !== "pre") {
+            // An interrupted Effect alone does not prove that fetch stops.
+            // Require remote disconnect before the provider's 1000 ms timeout.
+            const timer = setTimeout(() => disconnected.reject(new Error("Provider left the HTTP transport running after cancellation")), 500)
+
+            try {
+              await disconnected.promise
+            } finally {
+              clearTimeout(timer)
+            }
+          }
+        } finally {
+          release.resolve()
+        }
+
+        expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true)
+        expect(received).toBe(phase === "pre" ? 0 : 1)
+      }
+    }
+  }, 15_000)
+
+  test("stalled SSE preserves timeout reasons for both providers", async () => {
+    const origin = serve(() => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(": stalled\n\n"))
+      },
+    }), { headers: { "Content-Type": "text/event-stream" } }))
+
+    const host = await createHost(origin, { timeoutMs: 100 })
+    cleanup(host.close)
+
+    for (const provider of ["openai", "google"]) {
+      const failure = await host.failure(provider)
+      expect(failure).toBeInstanceOf(WebSearch.RequestError)
+
+      if (!(failure instanceof WebSearch.RequestError)) throw new Error("Expected host request failure")
+      expect(failure.cause).toBeInstanceOf(DOMException)
+      expect(String(failure.cause)).toContain("TimeoutError")
+    }
   })
 })

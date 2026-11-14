@@ -1,7 +1,7 @@
 import { resolveCredential } from "./auth.js"
 import type { IntegrationContext } from "./auth.js"
 import type { OpenAIOptions } from "./config.js"
-import { isJSONString, isRecord, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
+import { isJSONString, isRecord, isSourceURL, parseSSE, parsedTimestamp, providerBaseURL, providerError, readJSON, sanitizeProviderMessage, sliceSpan, toResult } from "./types.js"
 import type { Credential, InternalSource, JsonValue, WebSearch } from "./types.js"
 
 const publicEndpoint = "https://api.openai.com/v1/responses"
@@ -45,6 +45,24 @@ export async function searchOpenAI(
     }
 
     if (credential.type === "oauth") {
+      if (credential.methodID === "chatgpt-token-sharing") {
+        const baseURL = await providerBaseURL(ctx, "openai", controller.signal)
+        controller.signal.throwIfAborted()
+
+        return await runOpenAIRequest(
+          baseURL ? `${baseURL}/responses` : publicEndpoint,
+          { authorization: `Bearer ${credential.access}` },
+          config,
+          query,
+          controller.signal,
+          [credential.access, credential.refresh],
+        )
+      }
+
+      if (credential.methodID !== "chatgpt-browser" && credential.methodID !== "chatgpt-headless") {
+        throw new Error("Unsupported OpenAI OAuth method; expected chatgpt-token-sharing, chatgpt-browser, or chatgpt-headless")
+      }
+
       const account = accountID(credential)
 
       const auth = {
@@ -84,6 +102,7 @@ async function runOpenAIRequest(
   const headers: Record<string, string> = {}
   headers.Authorization = auth.authorization
   headers["Content-Type"] = "application/json"
+  headers.Accept = "text/event-stream"
 
   if (auth.originator) headers.originator = auth.originator
 
@@ -136,6 +155,8 @@ async function collectOutputItems(response: Response, credentials: readonly stri
 
     if (!isRecord(body)) throw new Error("Invalid OpenAI web search response: body is not an object")
 
+    if (body.status === "incomplete") throw incompleteError(body, credentials)
+
     if (body.status === "failed" || isRecord(body.error)) {
       const message = streamErrorMessage(body)
       throw new Error(`OpenAI web search failed: ${sanitizeProviderMessage(message, credentials)}`)
@@ -161,7 +182,9 @@ async function collectOutputItems(response: Response, credentials: readonly stri
 
     if (payload.type === "response.output_item.done" && isRecord(payload.item)) {
       items.push(payload.item)
-    } else if (payload.type === "response.completed" || payload.type === "response.incomplete") {
+    } else if (payload.type === "response.incomplete") {
+      throw incompleteError(isRecord(payload.response) ? payload.response : {}, credentials)
+    } else if (payload.type === "response.completed") {
       terminal = true
       const output = isRecord(payload.response) ? payload.response.output : undefined
 
@@ -178,6 +201,13 @@ async function collectOutputItems(response: Response, credentials: readonly stri
   }
 
   return items.length > 0 ? items : completed ?? []
+}
+
+function incompleteError(response: Record<string, JsonValue>, credentials: readonly string[]): Error {
+  const details = isRecord(response.incomplete_details) ? response.incomplete_details : {}
+  const reason = isJSONString(details.reason) ? sanitizeProviderMessage(details.reason, credentials) : "unknown reason"
+
+  return new Error(`OpenAI web search incomplete: ${reason}`)
 }
 
 function streamErrorMessage(payload: Record<string, JsonValue>): string {
@@ -214,7 +244,7 @@ interface AccumulatedSource {
   readonly seenSpans: Set<string>
 }
 
-export function normalizeOutput(output: JsonValue): readonly WebSearch.Result[] {
+function normalizeOutput(output: JsonValue): readonly WebSearch.Result[] {
   if (!Array.isArray(output)) throw new Error("Invalid OpenAI web search response: missing output")
   const sourcesByURL = new Map<string, AccumulatedSource>()
   const order: string[] = []
@@ -263,7 +293,7 @@ function collectMessage(
       if (!isRecord(annotation) || annotation.type !== "url_citation") continue
       const url = isJSONString(annotation.url) ? annotation.url : undefined
 
-      if (!url || url.length === 0) continue
+      if (!url || !isSourceURL(url)) continue
       const span = sliceSpan(part.text, annotation.start_index, annotation.end_index)
       const title = isJSONString(annotation.title) ? annotation.title : undefined
       const published = parsedTimestamp(annotation.published_date ?? annotation.published)
@@ -285,7 +315,7 @@ function collectActionSources(
     if (!isRecord(rawSource) || rawSource.type !== "url") continue
     const url = isJSONString(rawSource.url) ? rawSource.url : undefined
 
-    if (!url || url.length === 0) continue
+    if (!url || !isSourceURL(url)) continue
     const title = isJSONString(rawSource.title) ? rawSource.title : undefined
     const published = parsedTimestamp(rawSource.published_date ?? rawSource.published)
     addSource(sourcesByURL, order, url, { title, published })
