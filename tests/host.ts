@@ -7,6 +7,7 @@ import { ConfigProviderPlugin } from "@opencode/core/config/plugin/provider";
 import { Credential } from "@opencode/core/credential";
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder";
 import { Watcher } from "@opencode/core/filesystem/watcher";
+import { Flag } from "@opencode/core/flag";
 import { Form } from "@opencode/core/form";
 import { Integration } from "@opencode/core/integration";
 import { Location } from "@opencode/core/location";
@@ -27,17 +28,15 @@ import { Cause, Effect, Exit, Layer, References, Schema, Scope } from "effect";
 
 import plugin from "../index.js";
 
-const fixtureKey = "fixture-secret-123456";
-
 const root = LayerNode.group([
   PluginHost.requirements,
   Form.node,
   Credential.node,
   Config.node,
+  Flag.node,
 ]);
 
 export const createHost = async (
-  baseURL?: string,
   options: Plugin.Context["options"] = {},
   providerSettings?: ReadonlyMap<string, Provider.Settings>,
   readUserConfig = false
@@ -47,7 +46,6 @@ export const createHost = async (
   const directory = mkdtempSync(path.join(cache, "websearch-host-"));
   const scope = await Effect.runPromise(Scope.make());
   let closed = false;
-  let failSettings = false;
 
   const close = async () => {
     if (closed) {
@@ -107,24 +105,6 @@ export const createHost = async (
           Location.Ref.make({ directory: AbsolutePath.make(directory) })
         )
       ),
-      Provider.node.replace(
-        Provider.node.mapLayer((original) =>
-          Layer.effect(
-            Provider.Service,
-            Effect.gen(function* providerLayer() {
-              const service = yield* Provider.Service;
-
-              return {
-                ...service,
-                get: (id: Provider.ID) =>
-                  failSettings
-                    ? Effect.die(new Error("fixture settings unavailable"))
-                    : service.get(id),
-              };
-            })
-          ).pipe(Layer.provide(original))
-        )
-      ),
       Permission.node.replace(
         Permission.node.mapLayer((original) =>
           Layer.effect(
@@ -141,24 +121,27 @@ export const createHost = async (
       ),
     ]);
 
+    // Ignore flag overrides from the environment so runs stay deterministic.
     const services = await Effect.runPromise(
       Layer.buildWithScope(layer, scope).pipe(
+        Effect.provideService(Flag.Overrides, undefined),
         Effect.provideService(References.MinimumLogLevel, "None")
       )
     );
 
-    const run = async <A, E>(
-      effect: Effect.Effect<A, E, Layer.Success<typeof layer> | Scope.Scope>,
-      signal?: AbortSignal
+    const provide = <A, E>(
+      effect: Effect.Effect<A, E, Layer.Success<typeof layer> | Scope.Scope>
     ) =>
-      await Effect.runPromise(
-        effect.pipe(
-          Effect.provide(services),
-          Scope.provide(scope),
-          Effect.provideService(References.MinimumLogLevel, "None")
-        ),
-        { signal }
+      effect.pipe(
+        Effect.provide(services),
+        Scope.provide(scope),
+        Effect.provideService(Flag.Overrides, undefined),
+        Effect.provideService(References.MinimumLogLevel, "None")
       );
+
+    const run = async <A, E>(
+      effect: Effect.Effect<A, E, Layer.Success<typeof layer> | Scope.Scope>
+    ) => await Effect.runPromise(provide(effect));
 
     const ctx = await run(
       PluginHost.make({ list: () => Effect.succeed([]) }, plugin.id)
@@ -173,10 +156,7 @@ export const createHost = async (
             for (const id of ["openai", "google"]) {
               const info = Provider.Info.empty(Provider.ID.make(id));
 
-              const settings = providerSettings?.get(id) ?? {
-                apiKey: fixtureKey,
-                baseURL,
-              };
+              const settings = providerSettings?.get(id) ?? {};
 
               editor.add({
                 info: Object.assign(info, { settings }),
@@ -197,14 +177,13 @@ export const createHost = async (
     const tools = await run(Tool.Service);
     const credentials = await run(Credential.Service);
 
-    const queryEffect = (providerID?: string, query = "fixture query") =>
+    const queryEffect = (providerID: string) =>
       websearch.query({
-        providerID:
-          providerID === undefined ? undefined : WebSearch.ID.make(providerID),
-        query,
+        providerID: WebSearch.ID.make(providerID),
+        query: "fixture query",
       });
 
-    const failure = async (providerID?: string) => {
+    const failure = async (providerID: string) => {
       const exit = await run(Effect.exit(queryEffect(providerID)));
 
       if (Exit.isSuccess(exit)) {
@@ -238,17 +217,11 @@ export const createHost = async (
       disposePlugin: async () => {
         await Effect.runPromise(Scope.close(pluginScope, Exit.void));
       },
-      query: async (providerID: string, query?: string) =>
-        await run(queryEffect(providerID, query)),
+      providers: async () => await run(websearch.providers()),
       queryExit: async (providerID: string, signal: AbortSignal) =>
-        await Effect.runPromiseExit(
-          queryEffect(providerID).pipe(
-            Effect.provide(services),
-            Scope.provide(scope)
-          ),
-          { signal }
-        ),
-      failure,
+        await Effect.runPromiseExit(provide(queryEffect(providerID)), {
+          signal,
+        }),
       failureCause: async (providerID: string) => {
         const error = await failure(providerID);
 
@@ -263,12 +236,6 @@ export const createHost = async (
           "Expected a provider Error inside the host request failure"
         );
       },
-      selectRandom: async () => {
-        await run(websearch.select("random"));
-      },
-      failSettings: () => {
-        failSettings = true;
-      },
       credential: async (integrationID: string, value: PluginCredential) => {
         await run(
           credentials.create({
@@ -277,7 +244,7 @@ export const createHost = async (
           })
         );
       },
-      render: async (providerID: string, query = "fixture query") => {
+      render: async (providerID: string, query: string) => {
         await run(websearch.select(WebSearch.ID.make(providerID)));
         const list = await run(tools.list());
         const tool = list.find((entry) => entry.name === "websearch");
