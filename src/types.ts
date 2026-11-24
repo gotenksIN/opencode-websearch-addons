@@ -1,11 +1,11 @@
-import type { Credential, Plugin, WebSearch } from "@opencode/plugin";
+import type { Plugin, WebSearch } from "@opencode/plugin";
 import {
   HttpClientError,
   HttpClientRequest,
   HttpClientResponse,
 } from "effect/http";
 
-export type { Credential, Plugin, WebSearch };
+export type { Credential, Plugin, WebSearch } from "@opencode/plugin";
 
 export type JsonValue =
   | string
