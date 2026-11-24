@@ -2,6 +2,15 @@
 
 All notable changes to `opencode-websearch-addons` are documented in this file.
 
+## 1.1.1 (2026-11-24)
+
+- Target OpenCode `v2.4.1`, raise the `@opencode/plugin` peer floor to `^2.4.1`, and keep Ultracite, Oxlint, and Oxfmt devDependencies on `latest`.
+- Preserve the preceding generated passage when OpenAI `url_citation` offsets cover only a citation marker, prefer complete terminal SSE output, and handle headerless SSE responses.
+- Update the test host for the flattened `websearch` tool output and the `Flag.Service` requirement in `@opencode/core` 2.4.1.
+- Remove loopback servers, provider payload mocks, and spies from the test suite.
+- Expand live E2E to cover default options, configured options, and an ungrounded prompt for both providers, and run test cases concurrently.
+- Rewrite `README.md` as a short introduction, reduce `CONTEXT.md` to project decisions, and remove duplicated rules from `AGENTS.md`.
+
 ## 1.1.0 (2026-11-14)
 
 - Move `@opencode/plugin` (`^2.3.0`) and `effect` (`^4.0.0`) to `peerDependencies`, externalize both in the distribution bundle, and remove legacy `ctx.catalog` compatibility shims.
