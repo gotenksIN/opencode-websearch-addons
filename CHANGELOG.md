@@ -2,6 +2,13 @@
 
 All notable changes to `opencode-websearch-addons` are documented in this file.
 
+## 1.1.2 (2026-11-27)
+
+- Enable Ultracite's `ultracite/oxlint/landmines` preset with a temporary `@interfere/landmines` `0.1.1` pin and a scoped `no-flake-masking` allowlist for the three live network tests in `test/live.test.ts`.
+- Remove explicit function return-type annotations (using inferred types and `satisfies` contracts) and prose comments across source and test files to satisfy all landmines rules.
+- Reorganize `tests/` to `test/` and rename `tests/host.ts` to `test/host.test-utils.ts` for `colocated-tests` and `test-file-names`.
+- Raise `engines.bun` to `>=1.4.0`, update `@types/bun` to `1.4.5`, update `oxlint-tsgolint` in `bun.lock`, and reconcile `README.md`, `AGENTS.md`, and `CONTEXT.md`.
+
 ## 1.1.1 (2026-11-24)
 
 - Target OpenCode `v2.4.1`, raise the `@opencode/plugin` peer floor to `^2.4.1`, and keep Ultracite, Oxlint, and Oxfmt devDependencies on `latest`.
