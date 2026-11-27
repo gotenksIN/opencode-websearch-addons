@@ -14,5 +14,5 @@
     "noImplicitOverride": true,
     "noEmit": true
   },
-  "include": ["index.ts", "src/**/*.ts", "websearch.test.ts", "tests/**/*.ts"]
+  "include": ["index.ts", "src/**/*.ts", "websearch.test.ts", "test/**/*.ts"]
 }

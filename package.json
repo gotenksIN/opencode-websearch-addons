@@ -28,7 +28,7 @@
     "format": "oxfmt --write .",
     "test": "bun test",
     "test:agent": "AGENT=1 bun test --bail",
-    "test:live": "bun test tests/live.test.ts",
+    "test:live": "bun test test/live.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "oxlint --type-aware . && oxfmt --check . && tsc --noEmit && bun test",
     "prepack": "bun run build",

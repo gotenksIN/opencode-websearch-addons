@@ -4,7 +4,7 @@ import { WebSearch } from "@opencode/core/websearch";
 import type { Plugin } from "@opencode/plugin/effect";
 import { Cause, Exit } from "effect";
 
-import { createHost } from "./tests/host.js";
+import { createHost } from "./test/host.test-utils.js";
 
 const fixtureSecret = "fixture-secret-123456";
 

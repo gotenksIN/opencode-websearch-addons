@@ -5,7 +5,7 @@ import { WebSearch } from "@opencode/core/websearch";
 import type { Plugin } from "@opencode/plugin/effect";
 import { Schema } from "effect";
 
-import { createHost } from "./host.js";
+import { createHost } from "./host.test-utils.js";
 
 // The plugin default `timeoutMs` is 120 000 ms.
 const defaultTimeoutMs = 120_000;
