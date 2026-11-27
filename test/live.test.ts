@@ -7,14 +7,12 @@ import { Schema } from "effect";
 
 import { createHost } from "./host.test-utils.js";
 
-// The plugin default `timeoutMs` is 120 000 ms.
 const defaultTimeoutMs = 120_000;
 
 const configuredTimeoutMs = 60_000;
 
 const testTimeout = (timeoutMs: number) => timeoutMs + 5000;
 
-// Two default-option requests and four configured or ungrounded requests.
 const suiteBudgetMs =
   2 * testTimeout(defaultTimeoutMs) + 4 * testTimeout(configuredTimeoutMs);
 
@@ -41,7 +39,6 @@ const Output = Schema.Array(
 
 const Metadata = Schema.Struct({ provider: Schema.String });
 
-// Content that is only a citation link carries no generated claim.
 const bareLink = /^\(?\[[^\]\r\n]*\]\(https?:\/\/[^\s)\r\n]+\)\)?$/u;
 
 const credentials = Schema.Struct({
@@ -54,8 +51,6 @@ let settings: ReadonlyMap<string, Provider.Settings>;
 let deadline = 0;
 
 beforeAll(async () => {
-  // OpenCode performs JSONC normalization and env/file substitution. All
-  // writable paths and the database remain isolated; only config is read.
   const reader = await createHost({}, undefined, true).catch(() => {
     throw new Error(
       "Live E2E prerequisite: unable to resolve your OpenCode global provider configuration."
@@ -113,8 +108,6 @@ const live = async (
       content: Schema.decodeUnknownSync(Schema.String)(result.content),
     });
   } catch {
-    // Setup, assertion, and upstream failures must not print live bodies,
-    // gateway addresses, or credentials in the test runner.
     failure = new Error(
       `Live ${provider} host E2E failed. Check gateway search support, credentials, model access, and the request budget.`
     );
@@ -123,7 +116,6 @@ const live = async (
   try {
     await host?.close();
   } catch {
-    // Keep an earlier redacted failure; never expose raw cleanup errors.
     failure ??= new Error(`Live ${provider} host cleanup failed.`);
   }
 

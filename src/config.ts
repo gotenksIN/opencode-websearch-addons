@@ -65,7 +65,7 @@ const defaultConfig: PluginConfig = {
   timeoutMs: 120_000,
 };
 
-const invalidOption = (name: string, expected: string): Error =>
+const invalidOption = (name: string, expected: string) =>
   new Error(`Invalid plugin option ${name}; expected ${expected}.`);
 
 const isOneOf = <const Values extends readonly string[]>(
@@ -74,11 +74,9 @@ const isOneOf = <const Values extends readonly string[]>(
 ): value is Values[number] =>
   isJSONString(value) && values.some((entry) => entry === value);
 
-const parseUserLocation = (
-  value: JsonValue | undefined
-): UserLocation | undefined => {
+const parseUserLocation = (value: JsonValue | undefined) => {
   if (value === undefined) {
-    return undefined;
+    return value;
   }
 
   if (!isRecord(value)) {
@@ -88,7 +86,8 @@ const parseUserLocation = (
     );
   }
 
-  const fields: Record<string, string> = {};
+  const fields: { -readonly [Key in keyof UserLocation]: UserLocation[Key] } =
+    {};
 
   for (const key of Object.keys(value)) {
     if (!isOneOf(key, userLocationKeys)) {
@@ -109,10 +108,12 @@ const parseUserLocation = (
     }
   }
 
-  return Object.keys(fields).length > 0 ? { ...fields } : undefined;
+  const location: UserLocation = { ...fields };
+
+  return Object.keys(fields).length > 0 ? location : undefined;
 };
 
-const parseOpenAI = (openai: Record<string, JsonValue>): OpenAIOptions => {
+const parseOpenAI = (openai: Record<string, JsonValue>) => {
   const model = openai.model ?? defaultConfig.openai.model;
 
   if (!isJSONString(model) || model.length === 0 || model.length > 100) {
@@ -144,12 +145,14 @@ const parseOpenAI = (openai: Record<string, JsonValue>): OpenAIOptions => {
 
   const userLocation = parseUserLocation(openai.userLocation);
 
-  return userLocation
+  const options: OpenAIOptions = userLocation
     ? { model, reasoningEffort, searchContextSize, userLocation }
     : { model, reasoningEffort, searchContextSize };
+
+  return options;
 };
 
-const parseGoogle = (google: Record<string, JsonValue>): GoogleOptions => {
+const parseGoogle = (google: Record<string, JsonValue>) => {
   const model = google.model ?? defaultConfig.google.model;
 
   if (!isJSONString(model) || model.length === 0 || model.length > 100) {
@@ -179,10 +182,12 @@ const parseGoogle = (google: Record<string, JsonValue>): GoogleOptions => {
     );
   }
 
-  return { model, thinkingLevel, searchTimeRange };
+  const options: GoogleOptions = { model, thinkingLevel, searchTimeRange };
+
+  return options;
 };
 
-export const parseConfig = (options: JsonValue = {}): PluginConfig => {
+export const parseConfig = (options: JsonValue = {}) => {
   const opts = isRecord(options) ? options : {};
   const openaiValue = opts.openai;
 
@@ -196,7 +201,6 @@ export const parseConfig = (options: JsonValue = {}): PluginConfig => {
     throw invalidOption("google", "an object");
   }
 
-  // Validate both envelopes before provider fields, then validate the timeout.
   const openai = parseOpenAI(openaiValue ?? {});
   const google = parseGoogle(googleValue ?? {});
   const timeoutMs = opts.timeoutMs ?? defaultConfig.timeoutMs;
@@ -210,5 +214,7 @@ export const parseConfig = (options: JsonValue = {}): PluginConfig => {
     throw invalidOption("timeoutMs", "an integer from 100 through 120000");
   }
 
-  return { openai, google, timeoutMs };
+  const config: PluginConfig = { openai, google, timeoutMs };
+
+  return config;
 };

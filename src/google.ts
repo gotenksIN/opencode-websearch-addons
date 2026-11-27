@@ -48,12 +48,12 @@ const errorFinishReasons = new Set([
   "MALFORMED_RESPONSE",
 ]);
 
-const daysInUTCMonth = (date: Date): number =>
+const daysInUTCMonth = (date: Date) =>
   new Date(
     Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)
   ).getUTCDate();
 
-const stripMilliseconds = (date: Date): string =>
+const stripMilliseconds = (date: Date) =>
   date.toISOString().replace(/\.\d{3}Z$/u, "Z");
 
 const timeRangeFilterFor = (range: SearchTimeRange, now: Date = new Date()) => {
@@ -128,9 +128,7 @@ interface MergedCandidate {
   blockReason?: string;
 }
 
-const validGenerateContentEnvelope = (
-  body: Record<string, JsonValue>
-): boolean => {
+const validGenerateContentEnvelope = (body: Record<string, JsonValue>) => {
   if (body.promptFeedback !== undefined && !isRecord(body.promptFeedback)) {
     return false;
   }
@@ -205,7 +203,7 @@ const validGenerateContentEnvelope = (
 const mergeGrounding = (
   merged: MergedCandidate,
   metadata: Record<string, JsonValue>
-): void => {
+) => {
   if (
     !Array.isArray(metadata.groundingChunks) &&
     !Array.isArray(metadata.groundingSupports)
@@ -234,7 +232,7 @@ const mergeChunk = (
   merged: MergedCandidate,
   payload: JsonValue,
   credentials: readonly string[]
-): MergedCandidate => {
+) => {
   if (!isRecord(payload)) {
     return merged;
   }
@@ -302,7 +300,7 @@ const mergeChunk = (
 const collectGenerateContent = async (
   response: Response,
   credentials: readonly string[]
-): Promise<MergedCandidate> => {
+) => {
   const contentType = response.headers.get("content-type") ?? "";
 
   if (!contentType.includes("text/event-stream")) {
@@ -343,7 +341,7 @@ const collectGenerateContent = async (
 const collectChunks = (
   chunks: JsonValue[],
   sourcesByURL: Map<string, InternalSource>
-): Map<number, InternalSource> => {
+) => {
   const chunkIndexToSource = new Map<number, InternalSource>();
 
   for (const [index, rawChunk] of chunks.entries()) {
@@ -385,10 +383,7 @@ const collectChunks = (
   return chunkIndexToSource;
 };
 
-const segmentSpan = (
-  part: string,
-  segment: Record<string, JsonValue>
-): string => {
+const segmentSpan = (part: string, segment: Record<string, JsonValue>) => {
   const supplied =
     isJSONString(segment.text) && part.includes(segment.text)
       ? segment.text
@@ -426,7 +421,7 @@ const segmentSpan = (
 const collectSupports = (
   merged: MergedCandidate,
   chunkIndexToSource: Map<number, InternalSource>
-): void => {
+) => {
   const supports = merged.grounding?.groundingSupports;
 
   if (!Array.isArray(supports)) {
@@ -478,9 +473,7 @@ const collectSupports = (
   }
 };
 
-const normalizeGenerateContent = (
-  merged: MergedCandidate
-): readonly WebSearch.Result[] => {
+const normalizeGenerateContent = (merged: MergedCandidate) => {
   const { finishReason, blockReason } = merged;
 
   if (blockReason !== undefined && blockReason.length > 0) {
@@ -502,14 +495,20 @@ const normalizeGenerateContent = (
   const chunks = merged.grounding?.groundingChunks;
 
   if (!Array.isArray(chunks)) {
-    return [];
+    const empty: readonly WebSearch.Result[] = [];
+
+    return empty;
   }
 
   const sourcesByURL = new Map<string, InternalSource>();
   const chunkIndexToSource = collectChunks(chunks, sourcesByURL);
   collectSupports(merged, chunkIndexToSource);
 
-  return [...sourcesByURL.values()].map(toResult);
+  const results: readonly WebSearch.Result[] = [...sourcesByURL.values()].map(
+    toResult
+  );
+
+  return results;
 };
 
 export const searchGoogle = async (
@@ -518,7 +517,7 @@ export const searchGoogle = async (
   timeoutMs: number,
   query: string,
   contextSignal: AbortSignal
-): Promise<readonly WebSearch.Result[]> => {
+) => {
   contextSignal.throwIfAborted();
   const controller = new AbortController();
 

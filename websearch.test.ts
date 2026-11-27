@@ -25,11 +25,12 @@ const invalidOptions: [Plugin.Context["options"], string, string][] = [
   [{ openai: [] }, "openai", "an object"],
   [{ google: "" }, "google", "an object"],
   ...["", "x".repeat(101), 7].map(
-    (model): [Plugin.Context["options"], string, string] => [
-      { openai: { model } },
-      "openai.model",
-      "a non-empty string of at most 100 characters",
-    ]
+    (model) =>
+      [
+        { openai: { model } },
+        "openai.model",
+        "a non-empty string of at most 100 characters",
+      ] satisfies [Plugin.Context["options"], string, string]
   ),
   [
     { google: { model: false } },
@@ -37,18 +38,20 @@ const invalidOptions: [Plugin.Context["options"], string, string][] = [
     "a non-empty string of at most 100 characters",
   ],
   ...["high", "xhigh", "max", 1].map(
-    (reasoningEffort): [Plugin.Context["options"], string, string] => [
-      { openai: { reasoningEffort } },
-      "openai.reasoningEffort",
-      'one of "none", "minimal", "low", or "medium"',
-    ]
+    (reasoningEffort) =>
+      [
+        { openai: { reasoningEffort } },
+        "openai.reasoningEffort",
+        'one of "none", "minimal", "low", or "medium"',
+      ] satisfies [Plugin.Context["options"], string, string]
   ),
   ...["high", false].map(
-    (thinkingLevel): [Plugin.Context["options"], string, string] => [
-      { google: { thinkingLevel } },
-      "google.thinkingLevel",
-      'one of "minimal", "low", or "medium"',
-    ]
+    (thinkingLevel) =>
+      [
+        { google: { thinkingLevel } },
+        "google.thinkingLevel",
+        'one of "minimal", "low", or "medium"',
+      ] satisfies [Plugin.Context["options"], string, string]
   ),
   [
     { openai: { searchContextSize: "huge" } },
@@ -76,11 +79,12 @@ const invalidOptions: [Plugin.Context["options"], string, string][] = [
     "a string",
   ],
   ...[99, 120_001, 1.5, "1000"].map(
-    (timeoutMs): [Plugin.Context["options"], string, string] => [
-      { timeoutMs },
-      "timeoutMs",
-      "an integer from 100 through 120000",
-    ]
+    (timeoutMs) =>
+      [
+        { timeoutMs },
+        "timeoutMs",
+        "an integer from 100 through 120000",
+      ] satisfies [Plugin.Context["options"], string, string]
   ),
 ];
 
@@ -133,8 +137,6 @@ describe("fail-closed credential resolution", () => {
   });
 
   test("unsupported credential types and OAuth methods reject before any request", async () => {
-    // A fallback key must never replace an unsupported active credential.
-    // The reserved .invalid domain never resolves, so a regression reaches no server.
     const fallback = {
       apiKey: fallbackKey,
       baseURL: "https://provider.invalid",

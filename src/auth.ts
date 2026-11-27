@@ -10,7 +10,7 @@ export const resolveCredential = async (
   ctx: IntegrationContext,
   integrationID: string,
   signal?: AbortSignal
-): Promise<Credential.Value> => {
+) => {
   const connection = await awaitLookup(
     async () => await ctx.integration.connection.active(integrationID),
     signal
@@ -35,11 +35,10 @@ export const resolveCredential = async (
         isJSONString(apiKey) &&
         apiKey.trim().length > 0
       ) {
-        return { type: "key", key: apiKey.trim() };
+        return { type: "key", key: apiKey.trim() } satisfies Credential.Value;
       }
     } catch {
       signal?.throwIfAborted();
-      // Fall back to standard connection error.
     }
 
     throw new Error(

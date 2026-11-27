@@ -24,10 +24,13 @@ export const isJSONNumber = <T>(value: T): value is T & number =>
 export const isRecord = (value: unknown): value is Record<string, JsonValue> =>
   value instanceof Object && !Array.isArray(value);
 
+const isJSONArray = (value: unknown): value is JsonValue[] =>
+  Array.isArray(value);
+
 export const awaitLookup = async <T>(
   operation: () => Promise<T>,
   signal?: AbortSignal
-): Promise<T> => {
+) => {
   signal?.throwIfAborted();
 
   if (!signal) {
@@ -53,7 +56,7 @@ export const providerBaseURL = async (
   ctx: Pick<Plugin.Context, "provider">,
   providerID: string,
   signal?: AbortSignal
-): Promise<string | undefined> => {
+) => {
   try {
     const result = await awaitLookup(
       async () => await ctx.provider.get({ providerID }),
@@ -63,11 +66,9 @@ export const providerBaseURL = async (
     const settings: unknown = result?.data?.settings;
     const baseURL = isRecord(settings) ? settings.baseURL : undefined;
 
-    if (!isJSONString(baseURL)) {
-      return undefined;
-    }
-
-    const trimmed = baseURL.trim().replace(/\/+$/u, "");
+    const trimmed = isJSONString(baseURL)
+      ? baseURL.trim().replace(/\/+$/u, "")
+      : "";
 
     return trimmed.length > 0 ? trimmed : undefined;
   } catch {
@@ -86,23 +87,18 @@ export interface InternalSource {
   readonly seenSpans: Set<string>;
 }
 
-export const parsedTimestamp = (
-  value: JsonValue | undefined
-): number | undefined => {
+export const parsedTimestamp = (value: JsonValue | undefined) => {
   if (isJSONNumber(value) && Number.isFinite(value)) {
     return Math.abs(value) <= 8.64e15 ? value : undefined;
   }
 
-  if (!isJSONString(value) || value.length === 0) {
-    return undefined;
-  }
-
-  const parsed = Date.parse(value);
+  const parsed =
+    isJSONString(value) && value.length > 0 ? Date.parse(value) : Number.NaN;
 
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
-export const isSourceURL = (value: string): boolean => {
+export const isSourceURL = (value: string) => {
   if (!URL.canParse(value)) {
     return false;
   }
@@ -116,7 +112,7 @@ export const sliceSpan = (
   text: string,
   rawStart: JsonValue | undefined,
   rawEnd: JsonValue | undefined
-): string => {
+) => {
   if (!isJSONNumber(rawStart) || !isJSONNumber(rawEnd)) {
     return "";
   }
@@ -127,26 +123,25 @@ export const sliceSpan = (
   return text.slice(start, end);
 };
 
-const parseJSON = (text: string): JsonValue => {
+const parseJSON = (text: string) => {
   const value: unknown = JSON.parse(text);
 
-  // JSON.parse produces only JSON values, so these guards cover every result.
   if (
     value === null ||
     value === true ||
     value === false ||
     isJSONString(value) ||
     isJSONNumber(value) ||
-    Array.isArray(value) ||
+    isJSONArray(value) ||
     isRecord(value)
   ) {
-    return value;
+    return value satisfies JsonValue;
   }
 
   throw new TypeError("Invalid JSON value");
 };
 
-export const readJSON = async (response: Response): Promise<JsonValue> => {
+export const readJSON = async (response: Response) => {
   const text = await response.text();
 
   try {
@@ -159,7 +154,7 @@ export const readJSON = async (response: Response): Promise<JsonValue> => {
 export const sanitizeProviderMessage = (
   message: string,
   credentials: readonly string[] = []
-): string => {
+) => {
   let sanitized = message
     .replaceAll(
       /(?<quote>["']?)(?<key>\b(?:api[ _-]?key|x-goog-api-key|authorization|access[ _-]?token|refresh[ _-]?token|key)\b)\k<quote>(?<separator>\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
@@ -183,7 +178,7 @@ export const providerError = async (
   response: Response,
   provider: string,
   credentials: readonly string[] = []
-): Promise<never> => {
+) => {
   let detail: string | undefined;
 
   try {
@@ -199,7 +194,7 @@ export const providerError = async (
       detail = body.error;
     }
   } catch {
-    // Keep the status-only message when the body is not parseable.
+    detail = undefined;
   }
 
   const sanitizedDetail =
@@ -208,8 +203,6 @@ export const providerError = async (
       : sanitizeProviderMessage(detail, credentials);
 
   const description = `${provider} web search failed (HTTP ${response.status})${sanitizedDetail === undefined || sanitizedDetail.length === 0 ? "" : `: ${sanitizedDetail}`}`;
-  // Keep only synthetic, credential-free metadata. Do not retain the native
-  // response, request URL, headers, body, or transport cause in the error.
   const request = HttpClientRequest.post("https://provider.invalid/");
   const headers = new Headers();
   const retryAfter = response.headers.get("retry-after");
@@ -235,7 +228,7 @@ export const providerError = async (
   });
 };
 
-const parseSSEEvent = (payload: string, provider: string): JsonValue => {
+const parseSSEEvent = (payload: string, provider: string) => {
   try {
     return parseJSON(payload);
   } catch {
@@ -249,7 +242,7 @@ export const parseSSE = async function* parseSSE(
   response: Response,
   provider: string,
   skipDone = false
-): AsyncGenerator<JsonValue> {
+) {
   if (!response.body) {
     throw new Error(`${provider} web search response has no body`);
   }
@@ -268,15 +261,14 @@ export const parseSSE = async function* parseSSE(
   let data: string[] = [];
   let complete = false;
 
-  // A CR at the end of the buffer may be the first half of a CRLF split across chunks.
-  const nextLine = (final: boolean): string | undefined => {
+  const nextLine = (final: boolean) => {
     const match = /\r\n|\r|\n/u.exec(buffer);
 
     if (
       !match ||
       (!final && match[0] === "\r" && match.index === buffer.length - 1)
     ) {
-      return undefined;
+      return null;
     }
 
     const line = buffer.slice(0, match.index);
@@ -285,7 +277,7 @@ export const parseSSE = async function* parseSSE(
     return line;
   };
 
-  const addField = (line: string): void => {
+  const addField = (line: string) => {
     if (line.startsWith(":")) {
       return;
     }
@@ -300,23 +292,21 @@ export const parseSSE = async function* parseSSE(
     data.push(value.startsWith(" ") ? value.slice(1) : value);
   };
 
-  const takeEvent = (): string | undefined => {
+  const takeEvent = () => {
     const payload = data.join("\n").trim();
     data = [];
 
     if (payload.length === 0 || (skipDone && payload === "[DONE]")) {
-      return undefined;
+      return null;
     }
 
     return payload;
   };
 
-  const completeEvents = function* completeEvents(
-    final: boolean
-  ): Generator<string> {
-    let line: string | undefined;
+  const completeEvents = function* completeEvents(final: boolean) {
+    let line: string | null;
 
-    while ((line = nextLine(final)) !== undefined) {
+    while ((line = nextLine(final)) !== null) {
       if (line.length > 0) {
         addField(line);
         continue;
@@ -324,7 +314,7 @@ export const parseSSE = async function* parseSSE(
 
       const payload = takeEvent();
 
-      if (payload !== undefined) {
+      if (payload !== null) {
         yield payload;
       }
     }
@@ -346,14 +336,13 @@ export const parseSSE = async function* parseSSE(
       yield parseSSEEvent(payload, provider);
     }
 
-    // Accept a final event without its trailing blank line, as earlier releases did.
     if (buffer.length > 0) {
       addField(buffer);
     }
 
     const payload = takeEvent();
 
-    if (payload !== undefined) {
+    if (payload !== null) {
       yield parseSSEEvent(payload, provider);
     }
   } finally {
@@ -361,7 +350,7 @@ export const parseSSE = async function* parseSSE(
       try {
         await reader.cancel();
       } catch {
-        // Preserve the provider or parsing error that stopped consumption.
+        complete = false;
       }
     }
 
@@ -369,7 +358,7 @@ export const parseSSE = async function* parseSSE(
   }
 };
 
-export const toResult = (source: InternalSource): WebSearch.Result => {
+export const toResult = (source: InternalSource) => {
   const title =
     source.title === undefined || source.title.length === 0
       ? {}
@@ -383,5 +372,5 @@ export const toResult = (source: InternalSource): WebSearch.Result => {
     ...title,
     ...content,
     time: source.published === undefined ? {} : { published: source.published },
-  };
+  } satisfies WebSearch.Result;
 };

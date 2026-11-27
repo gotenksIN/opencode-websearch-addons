@@ -112,8 +112,6 @@ export const createHost = async (
             Effect.gen(function* permissionLayer() {
               const service = yield* Permission.Service;
 
-              // Permission UI and session persistence are outside this capability
-              // suite. All provider/tool execution still uses the real host.
               return { ...service, assert: () => Effect.void };
             })
           ).pipe(Layer.provide(original))
@@ -121,7 +119,6 @@ export const createHost = async (
       ),
     ]);
 
-    // Ignore flag overrides from the environment so runs stay deterministic.
     const services = await Effect.runPromise(
       Layer.buildWithScope(layer, scope).pipe(
         Effect.provideService(Flag.Overrides, undefined),

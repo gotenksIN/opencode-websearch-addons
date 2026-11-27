@@ -52,7 +52,7 @@ const buildResponsesBody = (config: OpenAIOptions, query: string) => {
 const incompleteError = (
   response: Record<string, JsonValue>,
   credentials: readonly string[]
-): Error => {
+) => {
   const details = isRecord(response.incomplete_details)
     ? response.incomplete_details
     : {};
@@ -64,7 +64,7 @@ const incompleteError = (
   return new Error(`OpenAI web search incomplete: ${reason}`);
 };
 
-const streamErrorMessage = (payload: Record<string, JsonValue>): string => {
+const streamErrorMessage = (payload: Record<string, JsonValue>) => {
   const response = isRecord(payload.response) ? payload.response : {};
   const responseError = isRecord(response.error) ? response.error : {};
   const error = isRecord(payload.error) ? payload.error : {};
@@ -95,7 +95,7 @@ const streamErrorMessage = (payload: Record<string, JsonValue>): string => {
 const readOutputItems = async (
   response: Response,
   credentials: readonly string[]
-): Promise<JsonValue[]> => {
+) => {
   const body = await readJSON(response);
 
   if (!isRecord(body)) {
@@ -129,12 +129,11 @@ const readOutputItems = async (
 const collectOutputItems = async (
   response: Response,
   credentials: readonly string[]
-): Promise<JsonValue[]> => {
+) => {
   const contentType = (response.headers.get("content-type") ?? "")
     .trim()
     .toLowerCase();
 
-  // Treat a missing content type as SSE because the request asks for it.
   if (contentType.length > 0 && !contentType.includes("text/event-stream")) {
     return await readOutputItems(response, credentials);
   }
@@ -184,7 +183,6 @@ const collectOutputItems = async (
     );
   }
 
-  // The terminal response holds the complete output; done items can be partial.
   return completed !== undefined && completed.length > 0 ? completed : items;
 };
 
@@ -196,7 +194,7 @@ const addSource = (
     readonly published?: number;
     readonly span?: string;
   }
-): void => {
+) => {
   let source = sourcesByURL.get(url);
 
   if (!source) {
@@ -229,7 +227,6 @@ interface TextRange {
   readonly end: number;
 }
 
-// A Markdown link, a numbered reference, or a native OpenAI cite marker.
 const citationMarker =
   /^(?:\(?\[[^\]\r\n]*\]\(https?:\/\/[^\s)\r\n]+\)\)?|\[\d+(?:[ ,–-]+\d+)*\]|\uE200cite\uE202[^\uE201]+\uE201)$/u;
 
@@ -239,16 +236,12 @@ const paragraphBreaks = /\r?\n[\t ]*\r?\n/gu;
 const listItemBreaks = /\r?\n(?=[\t ]*(?:[-*+]|\d+[.)])\s)/gu;
 const leadingPunctuation = /^[.,;:!?]+\s*/u;
 
-const trimmedMarkerRange = (
-  text: string,
-  start: number,
-  end: number
-): TextRange | undefined => {
+const trimmedMarkerRange = (text: string, start: number, end: number) => {
   const raw = text.slice(start, end);
   const trimmed = raw.trim();
 
   if (!citationMarker.test(trimmed)) {
-    return undefined;
+    return null;
   }
 
   const offset = raw.indexOf(trimmed);
@@ -256,15 +249,14 @@ const trimmedMarkerRange = (
   return { start: start + offset, end: start + offset + trimmed.length };
 };
 
-// Converts a Unicode code point index to a UTF-16 index.
-const utf16Offset = (text: string, points: number): number | undefined => {
+const utf16Offset = (text: string, points: number) => {
   let offset = 0;
 
   for (let count = 0; count < points; count += 1) {
     const point = text.codePointAt(offset);
 
     if (point === undefined) {
-      return undefined;
+      return null;
     }
 
     offset += point > 0xff_ff ? 2 : 1;
@@ -273,13 +265,11 @@ const utf16Offset = (text: string, points: number): number | undefined => {
   return offset;
 };
 
-// Returns the UTF-16 range of an annotation that covers only a citation
-// marker. Offsets can be UTF-16 or Unicode code point indices.
 const markerRange = (
   text: string,
   rawStart: JsonValue | undefined,
   rawEnd: JsonValue | undefined
-): TextRange | undefined => {
+) => {
   if (
     !isJSONNumber(rawStart) ||
     !isJSONNumber(rawEnd) ||
@@ -288,13 +278,13 @@ const markerRange = (
     rawStart < 0 ||
     rawEnd <= rawStart
   ) {
-    return undefined;
+    return null;
   }
 
   if (rawEnd <= text.length) {
     const direct = trimmedMarkerRange(text, rawStart, rawEnd);
 
-    if (direct !== undefined) {
+    if (direct !== null) {
       return direct;
     }
   }
@@ -302,13 +292,12 @@ const markerRange = (
   const start = utf16Offset(text, rawStart);
   const end = utf16Offset(text, rawEnd);
 
-  // Identical offsets mean the UTF-16 check above already covered this range.
   if (
-    start === undefined ||
-    end === undefined ||
+    start === null ||
+    end === null ||
     (start === rawStart && end === rawEnd)
   ) {
-    return undefined;
+    return null;
   }
 
   return trimmedMarkerRange(text, start, end);
@@ -320,13 +309,11 @@ const isAdjacent = (text: string, before: TextRange, start: number) => {
   return markerSeparator.test(gap) && !blankLine.test(gap);
 };
 
-// Moves the start back over markers that cite the same passage.
-// Requires markers sorted ascending by start offset.
 const groupStart = (
   text: string,
   marker: TextRange,
   markers: readonly TextRange[]
-): number => {
+) => {
   let { start } = marker;
 
   for (let index = markers.length - 1; index >= 0; index -= 1) {
@@ -344,7 +331,7 @@ const groupStart = (
   return start;
 };
 
-const lastMatchEnd = (pattern: RegExp, text: string): number => {
+const lastMatchEnd = (pattern: RegExp, text: string) => {
   let end = 0;
 
   for (const match of text.matchAll(pattern)) {
@@ -354,12 +341,11 @@ const lastMatchEnd = (pattern: RegExp, text: string): number => {
   return end;
 };
 
-// Returns the generated passage that a citation marker follows.
 const passageBefore = (
   text: string,
   marker: TextRange,
   markers: readonly TextRange[]
-): string => {
+) => {
   const start = groupStart(text, marker, markers);
   const before = text.slice(0, start);
 
@@ -376,7 +362,7 @@ const collectPart = (
   text: string,
   annotations: readonly JsonValue[],
   sourcesByURL: Map<string, InternalSource>
-): void => {
+) => {
   const citations = annotations
     .filter(isRecord)
     .filter((annotation) => annotation.type === "url_citation");
@@ -385,9 +371,8 @@ const collectPart = (
     markerRange(text, annotation.start_index, annotation.end_index)
   );
 
-  // Every marker bounds a passage, including markers with skipped URLs.
   const markers = ranges
-    .filter((range) => range !== undefined)
+    .filter((range) => range !== null)
     .toSorted((left, right) => left.start - right.start);
 
   for (const [index, annotation] of citations.entries()) {
@@ -400,7 +385,7 @@ const collectPart = (
     const marker = ranges[index];
 
     const span =
-      marker === undefined
+      marker === undefined || marker === null
         ? sliceSpan(text, annotation.start_index, annotation.end_index)
         : passageBefore(text, marker, markers);
 
@@ -417,7 +402,7 @@ const collectPart = (
 const collectMessage = (
   item: Record<string, JsonValue>,
   sourcesByURL: Map<string, InternalSource>
-): void => {
+) => {
   if (!Array.isArray(item.content)) {
     return;
   }
@@ -437,7 +422,7 @@ const collectMessage = (
 const collectActionSources = (
   item: Record<string, JsonValue>,
   sourcesByURL: Map<string, InternalSource>
-): void => {
+) => {
   const action = isRecord(item.action) ? item.action : {};
 
   if (!Array.isArray(action.sources)) {
@@ -465,7 +450,7 @@ const collectActionSources = (
   }
 };
 
-const normalizeOutput = (output: JsonValue[]): readonly WebSearch.Result[] => {
+const normalizeOutput = (output: JsonValue[]) => {
   const sourcesByURL = new Map<string, InternalSource>();
 
   for (const rawItem of output) {
@@ -480,7 +465,11 @@ const normalizeOutput = (output: JsonValue[]): readonly WebSearch.Result[] => {
     }
   }
 
-  return [...sourcesByURL.values()].map(toResult);
+  const results: readonly WebSearch.Result[] = [...sourcesByURL.values()].map(
+    toResult
+  );
+
+  return results;
 };
 
 const runOpenAIRequest = async (
@@ -494,7 +483,7 @@ const runOpenAIRequest = async (
   query: string,
   signal: AbortSignal,
   credentials: readonly string[]
-): Promise<readonly WebSearch.Result[]> => {
+) => {
   const headers: Record<string, string> = {};
   headers.Authorization = auth.authorization;
   headers["Content-Type"] = "application/json";
@@ -525,14 +514,9 @@ const runOpenAIRequest = async (
   return normalizeOutput(items);
 };
 
-const accountID = (credential: Credential.OAuth): string | undefined => {
+const accountID = (credential: Credential.OAuth) => {
   const meta = credential.metadata;
-
-  if (!isRecord(meta)) {
-    return undefined;
-  }
-
-  const account = meta.accountID ?? meta.accountId;
+  const account = isRecord(meta) ? (meta.accountID ?? meta.accountId) : "";
 
   return isJSONString(account) && account.length > 0 ? account : undefined;
 };
@@ -543,7 +527,7 @@ export const searchOpenAI = async (
   timeoutMs: number,
   query: string,
   contextSignal: AbortSignal
-): Promise<readonly WebSearch.Result[]> => {
+) => {
   contextSignal.throwIfAborted();
   const controller = new AbortController();
 
