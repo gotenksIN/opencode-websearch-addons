@@ -99,7 +99,7 @@ The plugin keeps Google source URLs unchanged; do not rewrite them.
 
 ## Development
 
-Use Bun 1.3 or newer for all scripts; the test suite uses concurrent test execution.
+Use Bun 1.4 or newer for all scripts; the test suite uses concurrent test execution.
 
 ```sh
 bun install
