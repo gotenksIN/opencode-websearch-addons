@@ -2,6 +2,15 @@
 
 All notable changes to `opencode-websearch-addons` are documented in this file.
 
+## 1.3.0 (2026-11-28)
+
+- Migrate the plugin entrypoint from the Promise wrapper (`@opencode/plugin`) to the native Effect entrypoint (`@opencode/plugin/effect`), yielding `ctx.websearch.transform` directly in the activation scope and removing `PluginPromise` from the test host.
+- Replace raw `fetch` and `AbortController` handling with scoped Effect `FetchHttpClient`, redirect rejection (`redirect: "error"`), disabled request tracing, a single `Effect.timeoutOrElse` boundary per search, and credential-free `HttpClientError` sanitization for status, transport, and encoding failures.
+- Wrap resolved credentials in Effect `Redacted` at `resolveCredential`, unwrapping only at the `x-goog-api-key` header and error-sanitization boundaries.
+- Replace the custom SSE line scanner with `Stream.fromReadableStream`, `Stream.decodeText`, and an `Sse.makeParser` channel adapter that ignores `retry:` events, flushes trailing events on clean EOF, and preserves OpenAI early stop at `response.completed`.
+- Use Effect `DateTime` for Google `timeRangeFilter` calendar arithmetic and `Schema.decodeUnknownResult` for `parseConfig` leaf validation while preserving existing error messages and validation order.
+- Tighten `peerDependencies.effect` to `^4.1.0`, update `@opencode/core` and `@opencode/plugin` to `2.4.2`, move `@types/bun` and `typescript` devDependencies to `latest`, remove `CONTEXT.md`, and reconcile `AGENTS.md` and `README.md`.
+
 ## 1.1.2 (2026-11-27)
 
 - Enable Ultracite's `ultracite/oxlint/landmines` preset with a temporary `@interfere/landmines` `0.1.1` pin and a scoped `no-flake-masking` allowlist for the three live network tests in `test/live.test.ts`.
