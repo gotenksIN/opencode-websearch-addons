@@ -1,3 +1,8 @@
+import { Effect, Stream } from "effect";
+import type { Redacted } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import type { HttpClientResponse } from "effect/http";
+
 import { resolveCredential } from "./auth.js";
 import type { IntegrationContext } from "./auth.js";
 import type { OpenAIOptions } from "./config.js";
@@ -6,21 +11,20 @@ import {
   isJSONString,
   isRecord,
   isSourceURL,
-  parseSSE,
   parsedTimestamp,
   providerBaseURL,
   providerError,
   readJSON,
+  sanitizeEncodeError,
   sanitizeProviderMessage,
+  sanitizeTransportError,
   sliceSpan,
+  sseEvents,
   toResult,
+  withRequestOptions,
+  withSearchTimeout,
 } from "./types.js";
-import type {
-  Credential,
-  InternalSource,
-  JsonValue,
-  WebSearch,
-} from "./types.js";
+import type { InternalSource, JsonValue, WebSearch } from "./types.js";
 
 const publicEndpoint = "https://api.openai.com/v1/responses";
 const codexEndpoint = "https://chatgpt.com/backend-api/codex/responses";
@@ -51,7 +55,7 @@ const buildResponsesBody = (config: OpenAIOptions, query: string) => {
 
 const incompleteError = (
   response: Record<string, JsonValue>,
-  credentials: readonly string[]
+  credentials: readonly Redacted.Redacted[]
 ) => {
   const details = isRecord(response.incomplete_details)
     ? response.incomplete_details
@@ -92,99 +96,126 @@ const streamErrorMessage = (payload: Record<string, JsonValue>) => {
   return message ?? code ?? "unknown error";
 };
 
-const readOutputItems = async (
-  response: Response,
-  credentials: readonly string[]
-) => {
-  const body = await readJSON(response);
+const readOutputItems = Effect.fnUntraced(function* readOutputItems(
+  response: HttpClientResponse.HttpClientResponse,
+  credentials: readonly Redacted.Redacted[]
+) {
+  const body = yield* readJSON(response, "OpenAI");
 
   if (!isRecord(body)) {
-    throw new Error(
-      "Invalid OpenAI web search response: body is not an object"
+    return yield* Effect.fail(
+      new Error("Invalid OpenAI web search response: body is not an object")
     );
   }
 
   if (body.status === "incomplete") {
-    throw incompleteError(body, credentials);
+    return yield* Effect.fail(incompleteError(body, credentials));
   }
 
   if (body.status === "failed" || isRecord(body.error)) {
     const message = streamErrorMessage(body);
-    throw new Error(
-      `OpenAI web search failed: ${sanitizeProviderMessage(message, credentials)}`
+
+    return yield* Effect.fail(
+      new Error(
+        `OpenAI web search failed: ${sanitizeProviderMessage(message, credentials)}`
+      )
     );
   }
 
   if (body.error !== undefined && body.error !== null) {
-    throw new Error("Invalid OpenAI web search response: malformed error");
+    return yield* Effect.fail(
+      new Error("Invalid OpenAI web search response: malformed error")
+    );
   }
 
   if (!Array.isArray(body.output)) {
-    throw new TypeError("Invalid OpenAI web search response: missing output");
+    return yield* Effect.fail(
+      new TypeError("Invalid OpenAI web search response: missing output")
+    );
   }
 
   return body.output;
-};
+});
 
-const collectOutputItems = async (
-  response: Response,
-  credentials: readonly string[]
-) => {
-  const contentType = (response.headers.get("content-type") ?? "")
+const collectOutputItems = Effect.fnUntraced(function* collectOutputItems(
+  response: HttpClientResponse.HttpClientResponse,
+  credentials: readonly Redacted.Redacted[]
+) {
+  const contentType = (response.headers["content-type"] ?? "")
     .trim()
     .toLowerCase();
 
   if (contentType.length > 0 && !contentType.includes("text/event-stream")) {
-    return await readOutputItems(response, credentials);
+    return yield* readOutputItems(response, credentials);
   }
 
   const items: JsonValue[] = [];
   let completed: JsonValue[] | undefined;
   let terminal = false;
 
-  for await (const payload of parseSSE(response, "OpenAI", true)) {
-    if (!isRecord(payload)) {
-      continue;
-    }
-
-    if (
-      payload.type === "response.output_item.done" &&
-      isRecord(payload.item)
-    ) {
-      items.push(payload.item);
-    } else if (payload.type === "response.incomplete") {
-      throw incompleteError(
-        isRecord(payload.response) ? payload.response : {},
-        credentials
-      );
-    } else if (payload.type === "response.completed") {
-      terminal = true;
-
-      const output = isRecord(payload.response)
-        ? payload.response.output
-        : undefined;
-
-      if (Array.isArray(output)) {
-        completed = output;
+  yield* Stream.runForEachWhile(
+    sseEvents(response, "OpenAI", true),
+    (payload) => {
+      if (!isRecord(payload)) {
+        return Effect.succeed(true);
       }
 
-      break;
-    } else if (payload.type === "response.failed" || payload.type === "error") {
-      const message = streamErrorMessage(payload);
-      throw new Error(
-        `OpenAI web search failed: ${sanitizeProviderMessage(message, credentials)}`
-      );
+      if (
+        payload.type === "response.output_item.done" &&
+        isRecord(payload.item)
+      ) {
+        items.push(payload.item);
+
+        return Effect.succeed(true);
+      }
+
+      if (payload.type === "response.incomplete") {
+        return Effect.fail(
+          incompleteError(
+            isRecord(payload.response) ? payload.response : {},
+            credentials
+          )
+        );
+      }
+
+      if (payload.type === "response.completed") {
+        terminal = true;
+
+        const output = isRecord(payload.response)
+          ? payload.response.output
+          : undefined;
+
+        if (Array.isArray(output)) {
+          completed = output;
+        }
+
+        return Effect.succeed(false);
+      }
+
+      if (payload.type === "response.failed" || payload.type === "error") {
+        const message = streamErrorMessage(payload);
+
+        return Effect.fail(
+          new Error(
+            `OpenAI web search failed: ${sanitizeProviderMessage(message, credentials)}`
+          )
+        );
+      }
+
+      return Effect.succeed(true);
     }
-  }
+  );
 
   if (!terminal) {
-    throw new Error(
-      "Invalid OpenAI web search response: stream ended without a terminal event"
+    return yield* Effect.fail(
+      new Error(
+        "Invalid OpenAI web search response: stream ended without a terminal event"
+      )
     );
   }
 
   return completed !== undefined && completed.length > 0 ? completed : items;
-};
+});
 
 const addSource = (
   sourcesByURL: Map<string, InternalSource>,
@@ -472,148 +503,135 @@ const normalizeOutput = (output: JsonValue[]) => {
   return results;
 };
 
-const runOpenAIRequest = async (
+const runOpenAIRequest = Effect.fnUntraced(function* runOpenAIRequest(
+  client: HttpClient.HttpClient,
   endpoint: string,
   auth: {
-    readonly authorization: string;
+    readonly token: Redacted.Redacted;
     readonly originator?: string;
     readonly accountID?: string;
   },
   config: OpenAIOptions,
   query: string,
-  signal: AbortSignal,
-  credentials: readonly string[]
-) => {
-  const headers: Record<string, string> = {};
-  headers.Authorization = auth.authorization;
-  headers["Content-Type"] = "application/json";
-  headers.Accept = "text/event-stream";
+  credentials: readonly Redacted.Redacted[]
+) {
+  let baseRequest = HttpClientRequest.post(endpoint).pipe(
+    HttpClientRequest.bearerToken(auth.token),
+    HttpClientRequest.accept("text/event-stream")
+  );
 
   if (auth.originator !== undefined && auth.originator.length > 0) {
-    headers.originator = auth.originator;
+    baseRequest = HttpClientRequest.setHeader(
+      baseRequest,
+      "originator",
+      auth.originator
+    );
   }
 
   if (auth.accountID !== undefined && auth.accountID.length > 0) {
-    headers["chatgpt-account-id"] = auth.accountID;
+    baseRequest = HttpClientRequest.setHeader(
+      baseRequest,
+      "chatgpt-account-id",
+      auth.accountID
+    );
   }
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(buildResponsesBody(config, query)),
-    redirect: "error",
-    signal,
-  });
+  const request = yield* HttpClientRequest.bodyJson(
+    buildResponsesBody(config, query)
+  )(baseRequest).pipe(Effect.mapError(() => sanitizeEncodeError("OpenAI")));
 
-  if (!response.ok) {
-    await providerError(response, "OpenAI", credentials);
-  }
+  return yield* Effect.scoped(
+    Effect.gen(function* openAIRequest() {
+      const response = yield* HttpClient.withScope(client)
+        .execute(request)
+        .pipe(
+          Effect.mapError(() => sanitizeTransportError("OpenAI")),
+          withRequestOptions
+        );
 
-  const items = await collectOutputItems(response, credentials);
+      if (response.status < 200 || response.status >= 300) {
+        return yield* providerError(response, "OpenAI", credentials);
+      }
 
-  return normalizeOutput(items);
-};
+      const items = yield* collectOutputItems(response, credentials);
 
-const accountID = (credential: Credential.OAuth) => {
-  const meta = credential.metadata;
-  const account = isRecord(meta) ? (meta.accountID ?? meta.accountId) : "";
+      return normalizeOutput(items);
+    })
+  );
+});
 
-  return isJSONString(account) && account.length > 0 ? account : undefined;
-};
-
-export const searchOpenAI = async (
+const executeOpenAI = Effect.fnUntraced(function* executeOpenAI(
   ctx: IntegrationContext,
+  client: HttpClient.HttpClient,
   config: OpenAIOptions,
-  timeoutMs: number,
-  query: string,
-  contextSignal: AbortSignal
-) => {
-  contextSignal.throwIfAborted();
-  const controller = new AbortController();
+  query: string
+) {
+  yield* Effect.yieldNow;
+  const credential = yield* resolveCredential(ctx, "openai");
 
-  const timer = setTimeout(() => {
-    controller.abort(
-      new DOMException("The operation timed out.", "TimeoutError")
+  if (credential.type === "key") {
+    const baseURL = yield* providerBaseURL(ctx, "openai");
+
+    return yield* runOpenAIRequest(
+      client,
+      baseURL === undefined ? publicEndpoint : `${baseURL}/responses`,
+      { token: credential.key },
+      config,
+      query,
+      [credential.key]
     );
-  }, timeoutMs);
-
-  const onAbort = () => {
-    controller.abort(contextSignal.reason);
-  };
-
-  if (contextSignal.aborted) {
-    controller.abort(contextSignal.reason);
-  } else {
-    contextSignal.addEventListener("abort", onAbort, { once: true });
   }
 
-  try {
-    const credential = await resolveCredential(
-      ctx,
-      "openai",
-      controller.signal
-    );
+  if (credential.type === "oauth") {
+    if (credential.methodID === "chatgpt-token-sharing") {
+      const baseURL = yield* providerBaseURL(ctx, "openai");
 
-    controller.signal.throwIfAborted();
-
-    if (credential.type === "key") {
-      const baseURL = await providerBaseURL(ctx, "openai", controller.signal);
-      controller.signal.throwIfAborted();
-
-      return await runOpenAIRequest(
+      return yield* runOpenAIRequest(
+        client,
         baseURL === undefined ? publicEndpoint : `${baseURL}/responses`,
-        { authorization: `Bearer ${credential.key}` },
+        { token: credential.access },
         config,
         query,
-        controller.signal,
-        [credential.key]
-      );
-    }
-
-    if (credential.type === "oauth") {
-      if (credential.methodID === "chatgpt-token-sharing") {
-        const baseURL = await providerBaseURL(ctx, "openai", controller.signal);
-        controller.signal.throwIfAborted();
-
-        return await runOpenAIRequest(
-          baseURL === undefined ? publicEndpoint : `${baseURL}/responses`,
-          { authorization: `Bearer ${credential.access}` },
-          config,
-          query,
-          controller.signal,
-          [credential.access, credential.refresh]
-        );
-      }
-
-      if (
-        credential.methodID !== "chatgpt-browser" &&
-        credential.methodID !== "chatgpt-headless"
-      ) {
-        throw new Error(
-          "Unsupported OpenAI OAuth method; expected chatgpt-token-sharing, chatgpt-browser, or chatgpt-headless"
-        );
-      }
-
-      const account = accountID(credential);
-
-      const auth = {
-        authorization: `Bearer ${credential.access}`,
-        originator: "opencode",
-      };
-
-      return await runOpenAIRequest(
-        codexEndpoint,
-        account === undefined ? auth : { ...auth, accountID: account },
-        config,
-        query,
-        controller.signal,
         [credential.access, credential.refresh]
       );
     }
 
-    throw new Error("Unsupported OpenAI credential type");
-  } finally {
-    clearTimeout(timer);
-    contextSignal.removeEventListener("abort", onAbort);
+    if (
+      credential.methodID !== "chatgpt-browser" &&
+      credential.methodID !== "chatgpt-headless"
+    ) {
+      return yield* Effect.fail(
+        new Error(
+          "Unsupported OpenAI OAuth method; expected chatgpt-token-sharing, chatgpt-browser, or chatgpt-headless"
+        )
+      );
+    }
+
+    const auth = {
+      token: credential.access,
+      originator: "opencode",
+    };
+
+    return yield* runOpenAIRequest(
+      client,
+      codexEndpoint,
+      credential.accountID === undefined
+        ? auth
+        : { ...auth, accountID: credential.accountID },
+      config,
+      query,
+      [credential.access, credential.refresh]
+    );
   }
-};
+
+  return yield* Effect.fail(new Error("Unsupported OpenAI credential type"));
+});
+
+export const searchOpenAI = (
+  ctx: IntegrationContext,
+  client: HttpClient.HttpClient,
+  config: OpenAIOptions,
+  timeoutMs: number,
+  query: string
+) =>
+  executeOpenAI(ctx, client, config, query).pipe(withSearchTimeout(timeoutMs));

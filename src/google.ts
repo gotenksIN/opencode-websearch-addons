@@ -1,3 +1,7 @@
+import { DateTime, Effect, Redacted, Stream } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import type { HttpClientResponse } from "effect/http";
+
 import { resolveCredential } from "./auth.js";
 import type { IntegrationContext } from "./auth.js";
 import type { GoogleOptions, SearchTimeRange } from "./config.js";
@@ -6,13 +10,17 @@ import {
   isJSONString,
   isRecord,
   isSourceURL,
-  parseSSE,
   parsedTimestamp,
   providerBaseURL,
   providerError,
   readJSON,
+  sanitizeEncodeError,
   sanitizeProviderMessage,
+  sanitizeTransportError,
+  sseEvents,
   toResult,
+  withRequestOptions,
+  withSearchTimeout,
 } from "./types.js";
 import type { InternalSource, JsonValue, WebSearch } from "./types.js";
 
@@ -48,78 +56,49 @@ const errorFinishReasons = new Set([
   "MALFORMED_RESPONSE",
 ]);
 
-const daysInUTCMonth = (date: Date) =>
-  new Date(
-    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)
-  ).getUTCDate();
+const rangeOffsets = {
+  lastDay: { days: 1 },
+  lastWeek: { weeks: 1 },
+  lastMonth: { months: 1 },
+  lastYear: { years: 1 },
+} as const;
 
-const stripMilliseconds = (date: Date) =>
-  date.toISOString().replace(/\.\d{3}Z$/u, "Z");
+const stripMilliseconds = (value: DateTime.Utc) =>
+  DateTime.formatIso(value).replace(/\.\d{3}Z$/u, "Z");
 
-const timeRangeFilterFor = (range: SearchTimeRange, now: Date = new Date()) => {
-  const start = new Date(now);
+const timeRangeFilterFor = (
+  range: Exclude<SearchTimeRange, "any">,
+  now: DateTime.Utc
+) => ({
+  startTime: stripMilliseconds(DateTime.subtract(now, rangeOffsets[range])),
+  endTime: stripMilliseconds(now),
+});
 
-  switch (range) {
-    case "lastDay": {
-      start.setUTCDate(start.getUTCDate() - 1);
-      break;
+const buildGenerateContentBody = Effect.fnUntraced(
+  function* buildGenerateContentBody(config: GoogleOptions, query: string) {
+    const tool: Record<string, JsonValue> = {};
+
+    if (config.searchTimeRange === "any") {
+      tool.googleSearch = {};
+    } else {
+      const now = yield* DateTime.now;
+      tool.googleSearch = {
+        timeRangeFilter: timeRangeFilterFor(config.searchTimeRange, now),
+      };
     }
 
-    case "lastWeek": {
-      start.setUTCDate(start.getUTCDate() - 7);
-      break;
-    }
+    const body: Record<string, JsonValue> = {};
+    body.contents = [{ role: "user", parts: [{ text: query }] }];
+    body.tools = [tool];
+    body.generationConfig = {
+      thinkingConfig: {
+        thinkingLevel: thinkingLevelWire[config.thinkingLevel],
+      },
+    };
 
-    case "lastMonth": {
-      const day = start.getUTCDate();
-      start.setUTCDate(1);
-      start.setUTCMonth(start.getUTCMonth() - 1);
-      start.setUTCDate(Math.min(day, daysInUTCMonth(start)));
-      break;
-    }
-
-    case "lastYear": {
-      const day = start.getUTCDate();
-      start.setUTCDate(1);
-      start.setUTCFullYear(start.getUTCFullYear() - 1);
-      start.setUTCDate(Math.min(day, daysInUTCMonth(start)));
-      break;
-    }
-
-    case "any": {
-      throw new Error(
-        `Invalid searchTimeRange ${range} for a time range filter`
-      );
-    }
-
-    default: {
-      throw new Error(
-        `Invalid searchTimeRange ${String(range)} for a time range filter`
-      );
-    }
+    return body;
   }
-
-  return {
-    startTime: stripMilliseconds(start),
-    endTime: stripMilliseconds(now),
-  };
-};
-
-const buildGenerateContentBody = (config: GoogleOptions, query: string) => {
-  const tool: Record<string, JsonValue> = {};
-  tool.googleSearch =
-    config.searchTimeRange === "any"
-      ? {}
-      : { timeRangeFilter: timeRangeFilterFor(config.searchTimeRange) };
-  const body: Record<string, JsonValue> = {};
-  body.contents = [{ role: "user", parts: [{ text: query }] }];
-  body.tools = [tool];
-  body.generationConfig = {
-    thinkingConfig: { thinkingLevel: thinkingLevelWire[config.thinkingLevel] },
-  };
-
-  return body;
-};
+);
 
 interface MergedCandidate {
   readonly parts: (string | undefined)[];
@@ -228,19 +207,19 @@ const mergeGrounding = (
   }
 };
 
-const mergeChunk = (
+const mergeChunk = Effect.fnUntraced(function* mergeChunk(
   merged: MergedCandidate,
   payload: JsonValue,
-  credentials: readonly string[]
-) => {
+  credentials: readonly Redacted.Redacted[]
+) {
   if (!isRecord(payload)) {
     return merged;
   }
 
   if (payload.error !== undefined) {
     if (!isRecord(payload.error)) {
-      throw new Error(
-        "Invalid Gemini web search response: malformed stream error"
+      return yield* Effect.fail(
+        new Error("Invalid Gemini web search response: malformed stream error")
       );
     }
 
@@ -248,8 +227,10 @@ const mergeChunk = (
       ? payload.error.message
       : "unknown error";
 
-    throw new Error(
-      `Gemini web search failed: ${sanitizeProviderMessage(message, credentials)}`
+    return yield* Effect.fail(
+      new Error(
+        `Gemini web search failed: ${sanitizeProviderMessage(message, credentials)}`
+      )
     );
   }
 
@@ -295,48 +276,59 @@ const mergeChunk = (
   }
 
   return merged;
-};
+});
 
-const collectGenerateContent = async (
-  response: Response,
-  credentials: readonly string[]
-) => {
-  const contentType = response.headers.get("content-type") ?? "";
+const collectGenerateContent = Effect.fnUntraced(
+  function* collectGenerateContent(
+    response: HttpClientResponse.HttpClientResponse,
+    credentials: readonly Redacted.Redacted[]
+  ) {
+    const contentType = response.headers["content-type"] ?? "";
 
-  if (!contentType.includes("text/event-stream")) {
-    const body = await readJSON(response);
+    if (!contentType.includes("text/event-stream")) {
+      const body = yield* readJSON(response, "Gemini");
 
-    if (
-      !isRecord(body) ||
-      (body.error === undefined && !validGenerateContentEnvelope(body))
-    ) {
-      throw new Error(
-        "Invalid Gemini web search response: malformed response envelope"
+      if (
+        !isRecord(body) ||
+        (body.error === undefined && !validGenerateContentEnvelope(body))
+      ) {
+        return yield* Effect.fail(
+          new Error(
+            "Invalid Gemini web search response: malformed response envelope"
+          )
+        );
+      }
+
+      return yield* mergeChunk({ parts: [] }, body, credentials);
+    }
+
+    const merged: MergedCandidate = { parts: [] };
+    let terminal = false;
+
+    yield* Stream.runForEach(sseEvents(response, "Gemini"), (payload) =>
+      mergeChunk(merged, payload, credentials).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            terminal ||=
+              merged.finishReason !== undefined ||
+              merged.blockReason !== undefined ||
+              (isRecord(payload) && isRecord(payload.usageMetadata));
+          })
+        )
+      )
+    );
+
+    if (!terminal) {
+      return yield* Effect.fail(
+        new Error(
+          "Invalid Gemini web search response: stream ended without a terminal event"
+        )
       );
     }
 
-    return mergeChunk({ parts: [] }, body, credentials);
+    return merged;
   }
-
-  const merged: MergedCandidate = { parts: [] };
-  let terminal = false;
-
-  for await (const payload of parseSSE(response, "Gemini")) {
-    mergeChunk(merged, payload, credentials);
-    terminal ||=
-      merged.finishReason !== undefined ||
-      merged.blockReason !== undefined ||
-      (isRecord(payload) && isRecord(payload.usageMetadata));
-  }
-
-  if (!terminal) {
-    throw new Error(
-      "Invalid Gemini web search response: stream ended without a terminal event"
-    );
-  }
-
-  return merged;
-};
+);
 
 const collectChunks = (
   chunks: JsonValue[],
@@ -473,110 +465,116 @@ const collectSupports = (
   }
 };
 
-const normalizeGenerateContent = (merged: MergedCandidate) => {
-  const { finishReason, blockReason } = merged;
+const normalizeGenerateContent = Effect.fnUntraced(
+  function* normalizeGenerateContent(merged: MergedCandidate) {
+    const { finishReason, blockReason } = merged;
 
-  if (blockReason !== undefined && blockReason.length > 0) {
-    throw new Error(
-      `Gemini web search blocked by the provider (prompt block reason ${blockReason})`
-    );
-  }
-
-  if (finishReason !== undefined && blockedFinishReasons.has(finishReason)) {
-    throw new Error(
-      `Gemini web search blocked by the provider (finish reason ${finishReason})`
-    );
-  }
-
-  if (finishReason !== undefined && errorFinishReasons.has(finishReason)) {
-    throw new Error(`Gemini web search failed (finish reason ${finishReason})`);
-  }
-
-  const chunks = merged.grounding?.groundingChunks;
-
-  if (!Array.isArray(chunks)) {
-    const empty: readonly WebSearch.Result[] = [];
-
-    return empty;
-  }
-
-  const sourcesByURL = new Map<string, InternalSource>();
-  const chunkIndexToSource = collectChunks(chunks, sourcesByURL);
-  collectSupports(merged, chunkIndexToSource);
-
-  const results: readonly WebSearch.Result[] = [...sourcesByURL.values()].map(
-    toResult
-  );
-
-  return results;
-};
-
-export const searchGoogle = async (
-  ctx: IntegrationContext,
-  config: GoogleOptions,
-  timeoutMs: number,
-  query: string,
-  contextSignal: AbortSignal
-) => {
-  contextSignal.throwIfAborted();
-  const controller = new AbortController();
-
-  const timer = setTimeout(() => {
-    controller.abort(
-      new DOMException("The operation timed out.", "TimeoutError")
-    );
-  }, timeoutMs);
-
-  const onAbort = () => {
-    controller.abort(contextSignal.reason);
-  };
-
-  if (contextSignal.aborted) {
-    controller.abort(contextSignal.reason);
-  } else {
-    contextSignal.addEventListener("abort", onAbort, { once: true });
-  }
-
-  try {
-    const credential = await resolveCredential(
-      ctx,
-      "google",
-      controller.signal
-    );
-
-    controller.signal.throwIfAborted();
-
-    if (credential.type !== "key") {
-      throw new Error(
-        "Unsupported Google credential type; expected a key credential"
+    if (blockReason !== undefined && blockReason.length > 0) {
+      return yield* Effect.fail(
+        new Error(
+          `Gemini web search blocked by the provider (prompt block reason ${blockReason})`
+        )
       );
     }
 
-    const baseURL = await providerBaseURL(ctx, "google", controller.signal);
-    controller.signal.throwIfAborted();
-    const endpoint = `${baseURL ?? apiBase}/models/${encodeURIComponent(config.model)}:streamGenerateContent?alt=sse`;
-
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-        "x-goog-api-key": credential.key,
-      },
-      body: JSON.stringify(buildGenerateContentBody(config, query)),
-      redirect: "error",
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      await providerError(response, "Gemini", [credential.key]);
+    if (finishReason !== undefined && blockedFinishReasons.has(finishReason)) {
+      return yield* Effect.fail(
+        new Error(
+          `Gemini web search blocked by the provider (finish reason ${finishReason})`
+        )
+      );
     }
 
-    const merged = await collectGenerateContent(response, [credential.key]);
+    if (finishReason !== undefined && errorFinishReasons.has(finishReason)) {
+      return yield* Effect.fail(
+        new Error(`Gemini web search failed (finish reason ${finishReason})`)
+      );
+    }
 
-    return normalizeGenerateContent(merged);
-  } finally {
-    clearTimeout(timer);
-    contextSignal.removeEventListener("abort", onAbort);
+    const chunks = merged.grounding?.groundingChunks;
+
+    if (!Array.isArray(chunks)) {
+      const empty: readonly WebSearch.Result[] = [];
+
+      return empty;
+    }
+
+    const sourcesByURL = new Map<string, InternalSource>();
+    const chunkIndexToSource = collectChunks(chunks, sourcesByURL);
+    collectSupports(merged, chunkIndexToSource);
+
+    const results: readonly WebSearch.Result[] = [...sourcesByURL.values()].map(
+      toResult
+    );
+
+    return results;
   }
-};
+);
+
+const executeGoogle = Effect.fnUntraced(function* executeGoogle(
+  ctx: IntegrationContext,
+  client: HttpClient.HttpClient,
+  config: GoogleOptions,
+  query: string
+) {
+  yield* Effect.yieldNow;
+  const credential = yield* resolveCredential(ctx, "google");
+
+  if (credential.type !== "key") {
+    return yield* Effect.fail(
+      new Error("Unsupported Google credential type; expected a key credential")
+    );
+  }
+
+  const baseURL = yield* providerBaseURL(ctx, "google");
+
+  const encodedModel = yield* Effect.try({
+    try: () => encodeURIComponent(config.model),
+    catch: () => sanitizeEncodeError("Gemini"),
+  });
+
+  const endpoint = `${baseURL ?? apiBase}/models/${encodedModel}:streamGenerateContent?alt=sse`;
+  const payload = yield* buildGenerateContentBody(config, query);
+
+  const baseRequest = HttpClientRequest.post(endpoint).pipe(
+    HttpClientRequest.accept("text/event-stream"),
+    HttpClientRequest.setHeader(
+      "x-goog-api-key",
+      Redacted.value(credential.key)
+    )
+  );
+
+  const request = yield* HttpClientRequest.bodyJson(payload)(baseRequest).pipe(
+    Effect.mapError(() => sanitizeEncodeError("Gemini"))
+  );
+
+  const credentials = [credential.key];
+
+  return yield* Effect.scoped(
+    Effect.gen(function* googleRequest() {
+      const response = yield* HttpClient.withScope(client)
+        .execute(request)
+        .pipe(
+          Effect.mapError(() => sanitizeTransportError("Gemini")),
+          withRequestOptions
+        );
+
+      if (response.status < 200 || response.status >= 300) {
+        return yield* providerError(response, "Gemini", credentials);
+      }
+
+      const merged = yield* collectGenerateContent(response, credentials);
+
+      return yield* normalizeGenerateContent(merged);
+    })
+  );
+});
+
+export const searchGoogle = (
+  ctx: IntegrationContext,
+  client: HttpClient.HttpClient,
+  config: GoogleOptions,
+  timeoutMs: number,
+  query: string
+) =>
+  executeGoogle(ctx, client, config, query).pipe(withSearchTimeout(timeoutMs));

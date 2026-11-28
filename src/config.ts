@@ -1,29 +1,42 @@
-import { isJSONNumber, isJSONString, isRecord } from "./types.js";
+import { Result, Schema } from "effect";
+
+import { isRecord } from "./types.js";
 import type { JsonValue } from "./types.js";
 
-const reasoningEfforts = ["none", "minimal", "low", "medium"] as const;
+const reasoningEffortSchema = Schema.Literals([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+]);
 
-export type ReasoningEffort = (typeof reasoningEfforts)[number];
+export type ReasoningEffort = typeof reasoningEffortSchema.Type;
 
-const thinkingLevels = ["minimal", "low", "medium"] as const;
+const thinkingLevelSchema = Schema.Literals(["minimal", "low", "medium"]);
 
-export type ThinkingLevel = (typeof thinkingLevels)[number];
+export type ThinkingLevel = typeof thinkingLevelSchema.Type;
 
-const searchContextSizes = ["low", "medium", "high"] as const;
+const searchContextSizeSchema = Schema.Literals(["low", "medium", "high"]);
 
-export type SearchContextSize = (typeof searchContextSizes)[number];
+export type SearchContextSize = typeof searchContextSizeSchema.Type;
 
-const searchTimeRanges = [
+const searchTimeRangeSchema = Schema.Literals([
   "any",
   "lastDay",
   "lastWeek",
   "lastMonth",
   "lastYear",
-] as const;
+]);
 
-export type SearchTimeRange = (typeof searchTimeRanges)[number];
+export type SearchTimeRange = typeof searchTimeRangeSchema.Type;
 
 const userLocationKeys = ["city", "country", "region", "timezone"] as const;
+const userLocationKeySchema = Schema.Literals(userLocationKeys);
+const modelSchema = Schema.String.check(Schema.isBetweenLength(1, 100));
+
+const timeoutMsSchema = Schema.Int.check(
+  Schema.isBetween({ minimum: 100, maximum: 120_000 })
+);
 
 export interface UserLocation {
   readonly city?: string;
@@ -68,11 +81,15 @@ const defaultConfig: PluginConfig = {
 const invalidOption = (name: string, expected: string) =>
   new Error(`Invalid plugin option ${name}; expected ${expected}.`);
 
-const isOneOf = <const Values extends readonly string[]>(
-  value: JsonValue,
-  values: Values
-): value is Values[number] =>
-  isJSONString(value) && values.some((entry) => entry === value);
+const decodeOption = <S extends Schema.Decoder<unknown>>(
+  schema: S,
+  value: JsonValue | undefined,
+  name: string,
+  expected: string
+) =>
+  Result.getOrThrowWith(Schema.decodeUnknownResult(schema)(value), () =>
+    invalidOption(name, expected)
+  );
 
 const parseUserLocation = (value: JsonValue | undefined) => {
   if (value === undefined) {
@@ -90,21 +107,22 @@ const parseUserLocation = (value: JsonValue | undefined) => {
     {};
 
   for (const key of Object.keys(value)) {
-    if (!isOneOf(key, userLocationKeys)) {
-      throw invalidOption(
-        `openai.userLocation.${key}`,
-        `a key from ${userLocationKeys.join(", ")}`
-      );
-    }
+    const validKey = decodeOption(
+      userLocationKeySchema,
+      key,
+      `openai.userLocation.${key}`,
+      `a key from ${userLocationKeys.join(", ")}`
+    );
 
-    const field = value[key];
-
-    if (!isJSONString(field)) {
-      throw invalidOption(`openai.userLocation.${key}`, "a string");
-    }
+    const field = decodeOption(
+      Schema.String,
+      value[key],
+      `openai.userLocation.${validKey}`,
+      "a string"
+    );
 
     if (field.length > 0) {
-      fields[key] = field;
+      fields[validKey] = field;
     }
   }
 
@@ -114,34 +132,26 @@ const parseUserLocation = (value: JsonValue | undefined) => {
 };
 
 const parseOpenAI = (openai: Record<string, JsonValue>) => {
-  const model = openai.model ?? defaultConfig.openai.model;
+  const model = decodeOption(
+    modelSchema,
+    openai.model ?? defaultConfig.openai.model,
+    "openai.model",
+    "a non-empty string of at most 100 characters"
+  );
 
-  if (!isJSONString(model) || model.length === 0 || model.length > 100) {
-    throw invalidOption(
-      "openai.model",
-      "a non-empty string of at most 100 characters"
-    );
-  }
+  const reasoningEffort = decodeOption(
+    reasoningEffortSchema,
+    openai.reasoningEffort ?? defaultConfig.openai.reasoningEffort,
+    "openai.reasoningEffort",
+    'one of "none", "minimal", "low", or "medium"'
+  );
 
-  const reasoningEffort =
-    openai.reasoningEffort ?? defaultConfig.openai.reasoningEffort;
-
-  if (!isOneOf(reasoningEffort, reasoningEfforts)) {
-    throw invalidOption(
-      "openai.reasoningEffort",
-      'one of "none", "minimal", "low", or "medium"'
-    );
-  }
-
-  const searchContextSize =
-    openai.searchContextSize ?? defaultConfig.openai.searchContextSize;
-
-  if (!isOneOf(searchContextSize, searchContextSizes)) {
-    throw invalidOption(
-      "openai.searchContextSize",
-      'one of "low", "medium", or "high"'
-    );
-  }
+  const searchContextSize = decodeOption(
+    searchContextSizeSchema,
+    openai.searchContextSize ?? defaultConfig.openai.searchContextSize,
+    "openai.searchContextSize",
+    'one of "low", "medium", or "high"'
+  );
 
   const userLocation = parseUserLocation(openai.userLocation);
 
@@ -153,34 +163,26 @@ const parseOpenAI = (openai: Record<string, JsonValue>) => {
 };
 
 const parseGoogle = (google: Record<string, JsonValue>) => {
-  const model = google.model ?? defaultConfig.google.model;
+  const model = decodeOption(
+    modelSchema,
+    google.model ?? defaultConfig.google.model,
+    "google.model",
+    "a non-empty string of at most 100 characters"
+  );
 
-  if (!isJSONString(model) || model.length === 0 || model.length > 100) {
-    throw invalidOption(
-      "google.model",
-      "a non-empty string of at most 100 characters"
-    );
-  }
+  const thinkingLevel = decodeOption(
+    thinkingLevelSchema,
+    google.thinkingLevel ?? defaultConfig.google.thinkingLevel,
+    "google.thinkingLevel",
+    'one of "minimal", "low", or "medium"'
+  );
 
-  const thinkingLevel =
-    google.thinkingLevel ?? defaultConfig.google.thinkingLevel;
-
-  if (!isOneOf(thinkingLevel, thinkingLevels)) {
-    throw invalidOption(
-      "google.thinkingLevel",
-      'one of "minimal", "low", or "medium"'
-    );
-  }
-
-  const searchTimeRange =
-    google.searchTimeRange ?? defaultConfig.google.searchTimeRange;
-
-  if (!isOneOf(searchTimeRange, searchTimeRanges)) {
-    throw invalidOption(
-      "google.searchTimeRange",
-      'one of "any", "lastDay", "lastWeek", "lastMonth", or "lastYear"'
-    );
-  }
+  const searchTimeRange = decodeOption(
+    searchTimeRangeSchema,
+    google.searchTimeRange ?? defaultConfig.google.searchTimeRange,
+    "google.searchTimeRange",
+    'one of "any", "lastDay", "lastWeek", "lastMonth", or "lastYear"'
+  );
 
   const options: GoogleOptions = { model, thinkingLevel, searchTimeRange };
 
@@ -203,16 +205,13 @@ export const parseConfig = (options: JsonValue = {}) => {
 
   const openai = parseOpenAI(openaiValue ?? {});
   const google = parseGoogle(googleValue ?? {});
-  const timeoutMs = opts.timeoutMs ?? defaultConfig.timeoutMs;
 
-  if (
-    !isJSONNumber(timeoutMs) ||
-    !Number.isSafeInteger(timeoutMs) ||
-    timeoutMs < 100 ||
-    timeoutMs > 120_000
-  ) {
-    throw invalidOption("timeoutMs", "an integer from 100 through 120000");
-  }
+  const timeoutMs = decodeOption(
+    timeoutMsSchema,
+    opts.timeoutMs ?? defaultConfig.timeoutMs,
+    "timeoutMs",
+    "an integer from 100 through 120000"
+  );
 
   const config: PluginConfig = { openai, google, timeoutMs };
 

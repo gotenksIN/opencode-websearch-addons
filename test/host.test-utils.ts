@@ -13,7 +13,6 @@ import { Integration } from "@opencode/core/integration";
 import { Location } from "@opencode/core/location";
 import { Permission } from "@opencode/core/permission";
 import { PluginHost } from "@opencode/core/plugin/host";
-import { PluginPromise } from "@opencode/core/plugin/promise";
 import { Provider } from "@opencode/core/provider";
 import { AbsolutePath } from "@opencode/core/schema";
 import { SessionMessage } from "@opencode/core/session/message";
@@ -165,9 +164,7 @@ export const createHost = async (
     const pluginScope = await Effect.runPromise(Scope.make());
     await run(Effect.addFinalizer(() => Scope.close(pluginScope, Exit.void)));
     await run(
-      PluginPromise.fromPromise(plugin)
-        .effect(Object.assign(ctx, { options }))
-        .pipe(Scope.provide(pluginScope))
+      plugin.effect({ ...ctx, options }).pipe(Scope.provide(pluginScope))
     );
     await run(WebSearchTool.Plugin.effect(ctx));
     const websearch = await run(WebSearch.Service);
