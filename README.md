@@ -8,7 +8,7 @@ It registers two providers:
 - `openai`: OpenAI Web Search
 - `google`: Gemini Google Search
 
-The plugin requires `@opencode/plugin` 2.4.1 or newer.
+The plugin requires `@opencode/plugin` 2.4.1 or newer and `effect` 4.1.0 or newer.
 
 ## Installation
 
@@ -25,7 +25,8 @@ Add the package to your `opencode.json` or `opencode.jsonc` file.
 }
 ```
 
-Register the package once; do not also load it from `.opencode/plugins/`.
+Register the package once.
+Do not load it from `.opencode/plugins/` at the same time.
 
 Select a provider in the same file:
 
@@ -89,26 +90,12 @@ Set `openai.userLocation` only when you need location-biased results.
 ## Output
 
 Each result has a source URL and can include a title, a publication time, and content.
-The content is model-generated text that cites the source; it is not copied from the source page.
+The model writes the content and cites the source.
+It does not copy text from the source page.
 A search with no web sources returns no results.
 
 Google can return `searchEntryPoint` search suggestions, but OpenCode has no place to display them.
 For this reason, the plugin does not fully meet Google's [Grounding with Google Search terms](https://ai.google.dev/gemini-api/terms#grounding-with-google-search).
 Review those terms before you use this plugin in a product.
-The plugin keeps Google source URLs unchanged; do not rewrite them.
-
-## Development
-
-Use Bun 1.4 or newer for all scripts; the test suite uses concurrent test execution.
-
-```sh
-bun install
-bun run check   # lint, format check, typecheck, and all tests
-bun run build   # build dist/
-```
-
-Other scripts: `bun test`, `bun run test:live`, `bun run lint`, `bun run format`, and `bun run typecheck`.
-
-`bun test` includes live searches against OpenAI and Google, which need network access and can incur charges.
-Configure `settings.baseURL` and `settings.apiKey` for both `openai` and `google` in your global OpenCode configuration, or the live tests fail.
-The live tests ignore project configuration.
+The plugin keeps Google source URLs unchanged.
+Do not rewrite them.
