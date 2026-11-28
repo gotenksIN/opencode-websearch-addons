@@ -38,17 +38,17 @@
     "@interfere/landmines": "0.1.1",
     "@opencode/core": "latest",
     "@opencode/plugin": "latest",
-    "@types/bun": "1.4.5",
+    "@types/bun": "latest",
     "effect": "4.1.0",
     "oxfmt": "latest",
     "oxlint": "latest",
     "oxlint-tsgolint": "latest",
-    "typescript": "7.0.2",
+    "typescript": "latest",
     "ultracite": "latest"
   },
   "peerDependencies": {
     "@opencode/plugin": "^2.4.1",
-    "effect": "^4.0.0"
+    "effect": "^4.1.0"
   },
   "engines": {
     "bun": ">=1.4.0"
